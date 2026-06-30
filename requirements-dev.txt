@@ -1,0 +1,23 @@
+# Development dependencies
+pytest>=7.0.0
+pytest-cov>=4.0.0
+coverage>=7.0.0
+black>=24.0.0
+isort>=5.13.0
+mypy>=1.8.0
+flake8>=7.0.0
+
+# Optional storage backends (for testing)
+redis>=5.0.0
+neo4j>=5.0.0
+psycopg2-binary>=2.9.0
+chromadb>=0.4.0
+
+# Embedding
+tiktoken>=0.7.0
+sentence-transformers>=2.0.0
+
+# Documentation
+sphinx>=7.0.0
+sphinx-rtd-theme>=2.0.0
+myst-parser>=2.0.0

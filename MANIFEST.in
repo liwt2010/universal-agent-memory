@@ -1,0 +1,15 @@
+include README.md
+include LICENSE
+include CHANGELOG.md
+include CONTRIBUTING.md
+include CODE_OF_CONDUCT.md
+include SECURITY.md
+include pyproject.toml
+recursive-include src *.py
+recursive-include tests *.py
+recursive-include examples *.py
+recursive-include docs *.md
+exclude .gitignore
+exclude .github
+exclude __pycache__
+exclude *.pyc

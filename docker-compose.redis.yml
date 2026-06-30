@@ -1,0 +1,14 @@
+# Docker Compose override for Redis backend
+# Usage: docker compose -f docker-compose.yml -f docker-compose.redis.yml up -d
+
+services:
+  uams:
+    environment:
+      - UAMS_STORAGE_BACKEND=redis
+      - UAMS_REDIS_HOST=redis
+      - UAMS_REDIS_PORT=6379
+      - UAMS_REDIS_DB=0
+      - UAMS_REDIS_PUBSUB=true
+    depends_on:
+      redis:
+        condition: service_healthy

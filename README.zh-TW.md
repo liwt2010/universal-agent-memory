@@ -1,0 +1,466 @@
+# 通用智能體記憶系統 (UAMS)
+
+**一個與領域無關的、為任意 AI 智能體打造的持久化記憶層。**
+
+每一個 AI 智能體在每次會話開始時都從零起步。UAMS 解決了這個問題。它靜默地擷取智能體的一切行為，將其壓縮為可搜尋的記憶圖譜，並在下一次會話啟動時注入恰到好處的上下文。
+
+無論你是建構個人助理、遊戲 NPC、客服機器人、科研智能體，還是多智能體系統 —— UAMS 都提供同一套通用記憶原語。
+
+---
+
+## 目錄
+
+- [設計理念](#設計理念)
+- [核心特性](#核心特性)
+- [快速開始](#快速開始)
+- [七大記憶原語](#七大記憶原語)
+- [四層記憶模型](#四層記憶模型)
+- [多智能體支援](#多智能體支援)
+- [專案結構](#專案結構)
+- [範例](#範例)
+- [測試](#測試)
+- [架構說明](#架構說明)
+- [安裝指南](#安裝指南)
+- [貢獻指南](#貢獻指南)
+- [授權條款](#授權條款)
+
+---
+
+## 設計理念
+
+> **記憶迴路是普適的：擷取 → 壓縮 → 索引 → 檢索 → 注入。**
+
+智能體框架應當專注於推理與行動。記憶應當是基礎設施 —— 如同資料庫或快取 —— 負責持久化、檢索並自動編排上下文。
+
+UAMS 將記憶基礎設施從智能體框架和應用領域中解耦出來。它受 [agentmemory](https://github.com/rohitg00/agentmemory) 和 [MemGPT](https://github.com/cpacker/MemGPT) 啟發，但剝離了所有編碼專用的語義，使其能夠服務於**任意**智能體領域。
+
+**有了 UAMS，會發生什麼變化：**
+
+- **第一次會話：** Alice 告訴智能體她是素食者，而且喜歡精品旅館。
+- **第二次會話：** Alice 詢問日本旅行旅館。智能體已經知道她的飲食限制和旅館偏好。無需重新解釋。
+- **智能體就是知道。**
+
+---
+
+## 核心特性
+
+| 特性 | 說明 |
+|------|------|
+| **四層記憶模型** | 工作記憶 → 情境記憶 → 語意記憶 → 程序記憶，靈感源自人類認知記憶架構 |
+| **事件匯流排擷取** | 透過通用事件匯流排實現零框架耦合的事件擷取 |
+| **混合檢索** | BM25 關鍵字 + 稠密向量 + 知識圖譜遍歷，以 RRF（倒數排序融合）整合 |
+| **隱私與去重** | 自動脫敏敏感資訊，SHA-256 滾動視窗去重 |
+| **艾賓浩斯遺忘** | 每個記憶層級可設定獨立的遺忘曲線 |
+| **多智能體協調** | 資源租約（Lease）、訊號傳遞（Signal）、共享記憶空間 |
+| **Token 預算注入** | 自動將檢索結果壓縮到 LLM 上下文視窗限制內 |
+| **可插拔儲存** | 記憶體儲存（預設）、ChromaDB、SQLite、PostgreSQL+pgvector、Neo4j |
+| **框架無關** | 相容 Claude、GPT、LangChain、AutoGen 或自研智能體 |
+
+---
+
+## 快速開始
+
+```python
+from uams import UniversalMemorySystem, AgentContext, AgentEvent, EventType
+
+# 1. 建立記憶系統
+ums = UniversalMemorySystem()
+
+# 2. 定義智能體上下文
+ctx = AgentContext(
+    agent_id="pa_001",
+    agent_type="personal_assistant",
+    session_id="sess_1",
+    user_id="alice",
+)
+
+# 3. 觀察事件（這是最主要的擷取原語）
+ums.observe(AgentEvent(
+    event_type=EventType.USER_INPUT,
+    agent_context=ctx,
+    content="我是素食者，而且我喜歡精品旅館。",
+    structured_data={
+        "fact": "Alice 是素食者，喜歡精品旅館",
+        "importance": 8.0,
+        "category": "travel_preference",
+    },
+))
+
+# 4. 結束會話（觸發四層壓縮整合）
+ums.observe(AgentEvent(
+    event_type=EventType.SESSION_END,
+    agent_context=ctx,
+    content="會話結束",
+))
+
+# 5. 新會話 —— 檢索相關上下文
+ctx2 = AgentContext(
+    agent_id="pa_001",
+    agent_type="personal_assistant",
+    session_id="sess_2",
+    user_id="alice",
+)
+
+memories = ums.recall("日本旅行旅館", context=ctx2, budget_tokens=1000)
+
+# 6. 以上下文區塊形式注入到 LLM 提示詞中
+context_block = ums.inject_context("日本旅行旅館", context=ctx2, budget_tokens=1000)
+print(context_block)
+```
+
+**輸出：**
+```
+## 相關記憶上下文
+
+1. [SEMANTIC] Alice 是素食者，喜歡精品旅館
+2. [EPISODIC] [USER_INPUT] 我是素食者，而且我喜歡精品旅館。
+```
+
+---
+
+## 七大記憶原語
+
+UAMS 暴露 **7 個通用原語**，替代了 agentmemory 的 53 個編碼專用工具。任何智能體框架都透過這 7 個呼叫完成整合。
+
+| 原語 | 簽名 | 用途 |
+|------|------|------|
+| **`observe(event)`** | 將任意 `AgentEvent` 記錄到工作記憶 | 主要擷取入口 —— 接入智能體生命週期 |
+| **`remember(fact, ...)`** | 顯式將事實儲存到語意記憶 | 使用者直接陳述偏好或事實 |
+| **`recall(query, ...)`** | 跨所有層級檢索相關記憶 | 每次智能體行動前呼叫，載入上下文 |
+| **`forget(memory_id)`** | 按 ID 刪除特定記憶 | 使用者要求刪除 / GDPR 合規 |
+| **`consolidate(session_id)`** | 觸發四層壓縮整合 | 會話結束自動觸發，或手動呼叫 |
+| **`inject_context(...)`** | 將記憶格式化為提示詞文字區塊 | 直接注入到 LLM 系統提示詞 |
+| **`sync(target)`** | 與外部檔案雙向同步 | `MEMORY.md`、遊戲存檔檔案等 |
+
+---
+
+## 四層記憶模型
+
+UAMS 以人類認知架構為藍本建模記憶。每一層擁有獨立的儲存後端、檢索策略和遺忘曲線。
+
+```
+┌────────────────────────────────────────────────────────────┐
+│  工作記憶 (WORKING)      原始事件、感官輸入           30分鐘 TTL │
+│  ─────────────────────────────────────────────────────────  │
+│  情境記憶 (EPISODIC)     會話敘事、經驗經歷           7天半衰期   │
+│  ─────────────────────────────────────────────────────────  │
+│  語意記憶 (SEMANTIC)     事實、偏好、概念             90天半衰期  │
+│  ─────────────────────────────────────────────────────────  │
+│  程序記憶 (PROCEDURAL)   技能、工作流程、模式           1年半衰期   │
+└────────────────────────────────────────────────────────────┘
+```
+
+### 各層詳情
+
+| 層級 | 儲存內容 | 預設 TTL | 檢索方式 | 範例 |
+|------|---------|---------|---------|------|
+| **工作記憶** | 原始 `AgentEvent` 流 | 30 分鐘 | 精確匹配 / 最近優先 | "使用者 2 分鐘前說了'你好'" |
+| **情境記憶** | 壓縮後的會話摘要 | 7 天 | 關鍵字 + 語意 | "昨天的旅行規劃會話" |
+| **語意記憶** | 擷取的事實和偏好 | 90 天 | 語意向量搜尋 | "Alice 是素食者" |
+| **程序記憶** | 可複用的模式和策略 | 1 年 | 圖譜 + 模式匹配 | "處理旅行查詢時，先問飲食限制" |
+
+### 記憶衰減公式（艾賓浩斯遺忘曲線）
+
+```
+留存率 = 0.5^(時間 / 半衰期)
+         × (1 + 0.1 × 存取次數)      # 被存取的記憶強化
+         × (0.5 + 0.5 × 重要性/10)   # 重要記憶持久化
+         × 置信度                      # 被矛盾的記憶消退
+```
+
+如果 `留存率 < 留存閾值`，記憶將被自動驅逐。
+
+---
+
+## 多智能體支援
+
+UAMS 透過三個原語實現多智能體之間的協調：**租約（Lease）**、**訊號（Signal）** 和 **共享記憶空間**。
+
+### 啟用多智能體模式
+
+```python
+ums.enable_multi_agent()  # 預設建立共享 InMemoryStore
+```
+
+### 資源租約（獨占鎖）
+
+```python
+# 智能體 A 取得獨占任務
+acquired = ums.acquire_lock("agent_a", "task_001_analysis", ttl=300.0)
+# 取得成功回傳 True，已被其他智能體鎖定則回傳 False
+
+# 智能體 B 嘗試取得同一任務 —— 被阻擋
+blocked = ums.acquire_lock("agent_b", "task_001_analysis")  # False
+
+# 智能體 A 釋放鎖
+ums.release_lock("agent_a", "task_001_analysis")
+```
+
+### 智能體間訊號
+
+```python
+from uams import Signal
+
+# 智能體 A 向智能體 B 傳送訊息
+ums.send_signal(Signal(
+    sender="agent_a",
+    recipient="agent_b",   # 使用 "*" 進行廣播
+    signal_type="data_ready",
+    payload={"dataset_size": 10000, "location": "/shared/data.csv"},
+))
+
+# 智能體 B 讀取所有未讀訊號
+signals = ums.read_signals("agent_b")
+for sig in signals:
+    print(f"來自 {sig.sender}: {sig.type} - {sig.payload}")
+```
+
+### 共享記憶空間
+
+```python
+# 智能體 A 擷取資料並共享給團隊
+ums.observe(AgentEvent(...))  # 寫入工作記憶
+
+# 提升到團隊共享語意空間
+ums.share_memory(memory, target_team="analysis_team")
+
+# 智能體 B 查詢團隊上下文
+team_memories = ums._coordinator.get_team_context("analysis_team", "dataset")
+```
+
+---
+
+## 專案結構
+
+```
+universal-agent-memory/
+├── pyproject.toml          # Python 套件設定
+├── README.md               # 本文件（英文）
+├── README.zh-CN.md         # 簡體中文版本
+├── README.zh-TW.md         # 繁體中文版本（本文件）
+├── src/uams/               # 核心套件（約 2300 行）
+│   ├── __init__.py         # 統一匯出介面
+│   ├── system.py           # UniversalMemorySystem 主入口
+│   ├── core/               # 列舉、資料模型、原語
+│   │   ├── enums.py
+│   │   └── models.py
+│   ├── bus/                # 事件匯流排（零框架耦合）
+│   │   └── event_bus.py
+│   ├── storage/            # 可插拔記憶儲存
+│   │   ├── base.py         # MemoryStore 抽象介面
+│   │   └── memory.py       # InMemoryStore 參考實作
+│   ├── pipeline/           # 壓縮、檢索、隱私、遺忘
+│   │   ├── compression.py  # 四層壓縮引擎
+│   │   ├── forgetting.py   # 艾賓浩斯遺忘曲線
+│   │   ├── privacy.py      # 敏感資訊脫敏 + 去重
+│   │   └── retrieval.py    # 混合搜尋（BM25 + 向量 + 圖譜 + RRF）
+│   ├── multi_agent/        # 租約、訊號、共享空間
+│   │   └── coordinator.py
+│   ├── embedding/          # 嵌入模型提供商介面
+│   │   └── base.py
+│   └── adapters/           # 智能體框架適配器
+│       └── base.py
+├── examples/               # 5 個領域無關的範例
+│   ├── personal_assistant.py
+│   ├── game_npc.py
+│   ├── customer_service.py
+│   ├── research_agent.py
+│   └── multi_agent.py
+└── tests/
+    └── test_system.py      # 單元測試
+```
+
+---
+
+## 範例
+
+從專案根目錄直接執行任意範例：
+
+```bash
+# 個人助理：跨會話記住飲食偏好和旅館品味
+python examples/personal_assistant.py
+
+# 遊戲 NPC：酒館老闆記住玩家過去的不良行為
+python examples/game_npc.py
+
+# 客服：客服智能體召回同一客戶的過往工單
+python examples/customer_service.py
+
+# 科研智能體：文獻綜述智能體召回先前假設和關鍵論文
+python examples/research_agent.py
+
+# 多智能體：資料擷取智能體向分析智能體傳送訊號並共享資料集
+python examples/multi_agent.py
+```
+
+---
+
+## 測試
+
+```bash
+# 執行所有單元測試
+python -m unittest discover -s tests -v
+
+# 或直接執行測試腳本
+python tests/test_system.py
+```
+
+### 已驗證的測試覆蓋
+
+| 測試 | 驗證內容 |
+|------|---------|
+| MemoryId 唯一性 | 全域 UUID 產生 |
+| 觀察 + 檢索 | 事件擷取與跨會話檢索 |
+| 顯式記住 | 直接向語意層寫入事實 |
+| 隱私過濾 | SECRET 脫敏和 PII 遮罩 |
+| 去重 | SHA-256 滾動視窗防止重複擷取 |
+| 多智能體鎖 | 獨占租約取得與阻擋 |
+| 層級統計 | 工作/情境/語意/程序層計數正確 |
+| 上下文注入 | 產生可直接用於提示詞的文字區塊 |
+
+---
+
+## 架構說明
+
+### 記憶迴路
+
+```
+┌─────────────────┐     ┌──────────────────┐
+│   智能體事件     │────▶│   事件匯流排      │
+│   (任意領域)     │     │   (零耦合)        │
+└─────────────────┘     └────────┬─────────┘
+                                 │
+                    ┌────────────┴────────────┐
+                    │                         │
+           ┌────────▼────────┐      ┌────────▼────────┐
+           │ 隱私過濾器       │      │ 去重視窗         │
+           │ (脫敏敏感資訊)    │      │ (SHA-256 視窗)  │
+           └────────┬────────┘      └────────┬────────┘
+                    │                         │
+                    └────────────┬────────────┘
+                                 │
+                          ┌──────▼──────┐
+                          │  工作記憶層   │  ← 30分鐘 TTL，精確匹配
+                          │  (WORKING)   │
+                          └──────┬──────┘
+                                 │ 會話結束觸發整合
+                    ┌────────────┴────────────┐
+                    │                         │
+           ┌────────▼────────┐      ┌────────▼────────┐
+           │ 壓縮引擎        │      │ 壓縮引擎        │
+           │ (LLM 驅動)      │      │ (規則/啟發式)  │
+           └────────┬────────┘      └────────┬────────┘
+                    │                         │
+             ┌──────▼──────┐           ┌──────▼──────┐
+             │  情境記憶層  │           │  語意記憶層  │
+             │ (EPISODIC)  │           │ (SEMANTIC)  │
+             │  7天半衰期   │           │  90天半衰期  │
+             └─────────────┘           └──────┬──────┘
+                                              │
+                                       ┌──────▼──────┐
+                                       │  程序記憶層  │
+                                       │ (PROCEDURAL)│
+                                       │  1年半衰期   │
+                                       └─────────────┘
+                                 │
+                    ┌────────────┴────────────┐
+                    │      檢索管線            │
+                    │ (BM25 + 向量 + 圖譜 + RRF)│
+                    └────────────┬────────────┘
+                                 │
+                          ┌──────▼──────┐
+                          │  Token 預算  │
+                          │  壓縮        │
+                          └──────────────┘
+                                 │
+                    ┌────────────┴────────────┐
+                    │   注入到智能體            │
+                    │   提示詞 / 上下文視窗      │
+                    └───────────────────────────┘
+```
+
+### 核心抽象
+
+UAMS 對**你的領域一無所知**。它只知道：
+
+- `AgentEvent` —— **誰**（智能體上下文）、**何時**（時間戳）、**什麼**（內容 + 結構化資料）
+- `Memory` —— **ID**（UUID）、**時間錨點**（時間後設資料）、**上下文**（誰產生的）、**載荷**（原始 + 結構化 + 嵌入）、**後設資料**（類型 / 隱私 / 重要性 / 關係）
+
+你的領域專用資訊全部存在於：
+- `payload.raw` —— 自然語言描述
+- `payload.structured` —— 可序列化的 JSON 工件
+- `metadata.categories` —— 你自己的標籤（如 `travel_preference`、`player_reputation`、`paper_reference`）
+
+---
+
+## 安裝指南
+
+### 從原始碼安裝（推薦用於開發）
+
+```bash
+git clone https://github.com/uams/universal-agent-memory.git
+cd universal-agent-memory
+pip install -e .
+```
+
+### 生產環境：新增可插拔後端
+
+```bash
+# 向量搜尋（語意層）
+pip install chromadb
+
+# 知識圖譜（程序層）
+pip install neo4j
+
+# 本地嵌入（無需 API 金鑰）
+pip install sentence-transformers
+```
+
+---
+
+## 貢獻指南
+
+我們歡迎來自所有領域的貢獻 —— 個人助理、遊戲 AI、機器人、客服、科研工具等。
+
+1. Fork 儲存庫
+2. 建立功能分支（`git checkout -b feature/awesome-feature`）
+3. 提交變更（`git commit -m '新增 awesome 功能'`）
+4. 推送到分支（`git push origin feature/awesome-feature`）
+5. 發起 Pull Request
+
+提交前請確保所有測試通過：
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+---
+
+## 語言版本
+
+- [English](README.md)
+- [简体中文 (Simplified Chinese)](README.zh-CN.md)
+- [繁體中文 (Traditional Chinese)](README.zh-TW.md) （本文件）
+
+---
+
+## 授權條款
+
+Apache-2.0
+
+---
+
+## 致謝
+
+UAMS 受以下優秀專案的啟發：
+
+- [agentmemory](https://github.com/rohitg00/agentmemory) by Rohit Ghumare —— 證明了該架構在編碼智能體上的可行性
+- [MemGPT](https://github.com/cpacker/MemGPT) by Charles Packer —— 為 LLM 設計了作業系統級的記憶管理
+
+UAMS 將它們的領域專用創新，泛化為一個通用的智能體基礎設施層。
+
+---
+
+<p align="center">
+  <b>通用記憶。任意智能體。任意領域。</b>
+</p>

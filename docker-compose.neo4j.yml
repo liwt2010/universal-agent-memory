@@ -1,0 +1,14 @@
+# Docker Compose override for Neo4j backend
+# Usage: docker compose -f docker-compose.yml -f docker-compose.neo4j.yml up -d
+
+services:
+  uams:
+    environment:
+      - UAMS_STORAGE_BACKEND=neo4j
+      - UAMS_NEO4J_URI=bolt://neo4j:7687
+      - UAMS_NEO4J_USER=neo4j
+      - UAMS_NEO4J_PASSWORD=uams_password
+      - UAMS_NEO4J_DATABASE=neo4j
+    depends_on:
+      neo4j:
+        condition: service_healthy
