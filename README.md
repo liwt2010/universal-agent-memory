@@ -1,9 +1,12 @@
 <p align="center">
+  <img src="https://img.shields.io/badge/version-0.1.0-blue.svg" alt="Version 0.1.0">
   <img src="https://img.shields.io/badge/python-3.9%2B-blue.svg" alt="Python 3.9+">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT">
-  <img src="https://img.shields.io/badge/tests-105%20passing-brightgreen.svg" alt="105 Tests Passing">
-  <img src="https://img.shields.io/badge/status-A%2B%20Production%20Ready-gold.svg" alt="A+ Production Ready">
+  <img src="https://img.shields.io/badge/tests-174%20passing-brightgreen.svg" alt="174 Tests Passing">
+  <img src="https://img.shields.io/badge/token%20compression-72%25%20savings-success.svg" alt="Token Compression 72% Savings">
+  <img src="https://img.shields.io/badge/embeddings-pluggable-blueviolet.svg" alt="Pluggable Embeddings">
   <img src="https://img.shields.io/badge/backends-6%20storage%20engines-blueviolet.svg" alt="6 Storage Backends">
+  <img src="https://img.shields.io/badge/status-A%2B%20Production%20Ready-gold.svg" alt="A+ Production Ready">
 </p>
 
 <h1 align="center">Universal Agent Memory System (UAMS)</h1>
