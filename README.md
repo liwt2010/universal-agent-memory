@@ -191,6 +191,76 @@ UAMS exposes **7 universal primitives** that replace the 53+ coding-specific too
 
 ---
 
+## 🧠 LLM Compression (optional)
+
+Off by default — UAMS ships with a **heuristic compression engine** so it runs without an LLM dependency. Opt in to **LLM-backed compression** for real token savings on long sessions.
+
+```bash
+# OpenAI
+export UAMS_LLM_ENABLED=true
+export UAMS_LLM_API_KEY=sk-...
+export UAMS_LLM_MODEL=gpt-4o-mini
+
+# MiniMax (OpenAI-compatible)
+export UAMS_LLM_ENABLED=true
+export UAMS_LLM_API_KEY=<minimax-key>
+export UAMS_LLM_BASE_URL=https://api.minimaxi.com/v1
+export UAMS_LLM_MODEL=MiniMax-Text-01
+
+# Local ollama (OpenAI-compat mode)
+export UAMS_LLM_ENABLED=true
+export UAMS_LLM_API_KEY=ollama        # required but unused
+export UAMS_LLM_BASE_URL=http://localhost:11434/v1
+export UAMS_LLM_MODEL=llama3.1
+```
+
+**What the LLM does**:
+
+| Stage | Heuristic (default) | LLM-backed |
+|-------|---------------------|------------|
+| Episodic consolidation | Concatenates `[TYPE] content\n...` (~raw token count) | Summarizes to ~200-word narrative (bounded) |
+| Semantic extraction | Picks `(str/int/float/bool)` fields from structured_data | LLM extracts atomic facts as JSON |
+| Procedural patterns | Counts category occurrences (≥2) | LLM identifies recurring workflows |
+
+**Measured savings** on a realistic 20-event session:
+
+```
+Heuristic:  300 tokens  (100% of raw)
+LLM:         84 tokens  ( 28% of raw)  → 72% savings
+```
+
+If the LLM call fails (network / quota / timeout), UAMS **automatically falls back** to heuristic compression so the agent loop never stalls. See [docs/PR1-2-LLM-Compression.md](docs/PR1-2-LLM-Compression.md) for the full design.
+
+---
+
+## 🔌 Pluggable Embedding Providers
+
+Off by default — UAMS falls back to **BM25 + graph retrieval** (2 of 3 RRF streams) when no embedding is configured. Opt in for the full hybrid pipeline.
+
+| Provider | Mode | Install | Use case |
+|----------|------|---------|----------|
+| **NoOp** | None | Built-in | Vector search disabled, pure BM25+graph |
+| **SentenceTransformers** | Local | `pip install "uams[embeddings]"` | Offline / on-prem, default `all-MiniLM-L6-v2` (384 dim) |
+| **OpenAI-compatible** | Remote | `pip install "uams[llm]"` | OpenAI / MiniMax / ollama / vLLM (set `UAMS_EMBEDDING_BASE_URL`) |
+
+```bash
+# Local sentence-transformers
+export UAMS_EMBEDDING_ENABLED=true
+export UAMS_EMBEDDING_PROVIDER=sentence_transformers
+export UAMS_EMBEDDING_MODEL=all-MiniLM-L6-v2
+
+# Remote OpenAI-compatible
+export UAMS_EMBEDDING_ENABLED=true
+export UAMS_EMBEDDING_PROVIDER=openai_compatible
+export UAMS_EMBEDDING_API_KEY=<key>
+export UAMS_EMBEDDING_BASE_URL=https://api.openai.com/v1
+export UAMS_EMBEDDING_REMOTE_MODEL=text-embedding-3-small
+```
+
+All providers share a common `LRU cache` (default 5000 entries) to avoid repeat embedding calls. Any provider initialization failure falls back to NoOp with a WARNING log — retrieval continues on BM25 + graph only.
+
+---
+
 ## 🤖 Multi-Agent Support
 
 ```python
@@ -271,7 +341,7 @@ pytest tests/ -v
 pytest tests/ --cov=src/uams --cov-report=html
 ```
 
-**Test Results:** 105 tests, 0 failures, 1 skipped (ChromaDB not installed)
+**Test Results:** 174 tests, 0 failures, 1 skipped (ChromaDB not installed)
 
 | Test Category | Count | Coverage |
 |--------------|-------|----------|
@@ -279,7 +349,9 @@ pytest tests/ --cov=src/uams --cov-report=html
 | System integration | 10 | Observe, recall, remember, forget, stats |
 | Privacy & security | 11 | PII masking, secret redaction, SQL injection, XSS |
 | Concurrency & stress | 14 | Thread safety, 10K volume, LRU, shutdown |
-| Configuration & validation | 7 | 12+ constraint validation |
+| Configuration & validation | 34 | environment strictness ladder + production safety + 30+ LLM/embedding fields |
+| LLM compression | 22 | OpenAI-compatible client, cached client, episodic/semantic/procedural |
+| Embedding providers | 20 | SentenceTransformers, OpenAI-compatible, cache, fallback |
 | Retry & benchmarks | 10 | Exponential backoff, performance metrics |
 | Backup & migration | 5 | JSONL, dict, cross-backend migration |
 | Chaos & edge cases | 4 | Truncation, Graph limits, input limits |
@@ -310,37 +382,43 @@ universal-agent-memory/
 │   ├── ISSUE_TEMPLATE/         # Issue templates
 │   ├── pull_request_template.md
 │   └── dependabot.yml
-├── src/uams/                   # Core package (~5000 lines)
+├── src/uams/                   # Core package
 │   ├── system.py               # Main facade
 │   ├── async_system.py         # Async API
-│   ├── config.py               # Configuration & validation
+│   ├── config.py               # Configuration + production safety
 │   ├── benchmarks.py           # Performance benchmarks
 │   ├── health.py               # Health checks & metrics
 │   ├── core/                   # Enums & data models
 │   ├── bus/                    # Event bus
 │   ├── storage/                # 6 storage backends
-│   ├── pipeline/               # Compression, retrieval, privacy, forgetting
+│   ├── pipeline/               # Compression, retrieval, privacy, forgetting, LLM compression
 │   ├── multi_agent/            # Coordination
-│   ├── embedding/              # Embedding interface
+│   ├── embedding/              # Embedding interface + 4 providers
+│   ├── llm/                    # OpenAI-compatible LLM clients + cache
 │   ├── adapters/               # Framework adapters
 │   └── utils/                  # Logging, retry, security, tokens, backup
-├── examples/                   # 5 domain examples
+├── examples/                   # 5 domain examples + token compression demo
 │   ├── personal_assistant.py
 │   ├── game_npc.py
 │   ├── customer_service.py
 │   ├── research_agent.py
-│   └── multi_agent.py
-├── tests/                      # 105 test cases
+│   ├── multi_agent.py
+│   └── _token_compression_demo.py
+├── tests/                      # 174 test cases
 │   ├── test_system.py
 │   ├── test_chaos.py
 │   ├── test_aplus.py
 │   ├── test_redis_store.py
-│   └── test_neo4j_store.py
+│   ├── test_neo4j_store.py
+│   ├── test_config_validation.py
+│   ├── test_llm_compression.py
+│   └── test_embedding.py
 └── docs/                       # Documentation
     ├── API.md                  # Full API reference
     ├── ARCHITECTURE.md         # Architecture deep dive
     ├── DEPLOYMENT.md           # Deployment guide
-    └── DEPLOYMENT.zh-CN.md     # 部署指南
+    ├── DEPLOYMENT.zh-CN.md     # 部署指南
+    └── PR1-2-LLM-Compression.md # LLM compression handoff doc
 ```
 
 ---
@@ -370,6 +448,20 @@ python examples/multi_agent.py
 
 ## 📊 Benchmarks
 
+### Token Compression (LLM vs Heuristic)
+
+Measured on a realistic 20-event agent session (`examples/_token_compression_demo.py`):
+
+| Engine | Episodic tokens | % of raw | Notes |
+|--------|----------------|----------|-------|
+| Raw concatenation | 300 | 100% | No compression |
+| HeuristicCompressionEngine | 300 | 100% | Just structures events, no summary |
+| **LLMCompressionEngine** | **84** | **28%** | **72% savings**, bounded ~200 words |
+
+LLM-backed output token count is bounded (~200 words), so it stays roughly **O(1) in session length** — the bigger the session, the bigger the relative savings.
+
+### Storage Throughput (micro-benchmark)
+
 ```python
 from uams.benchmarks import BenchmarkSuite
 
@@ -378,6 +470,12 @@ results = BenchmarkSuite.run_all(n=1000)
 # Retrieve: ~100,000 ops/sec
 # Search: ~10,000 ops/sec
 # Delete: ~5,000 ops/sec
+```
+
+Run the token compression demo yourself:
+
+```bash
+python examples/_token_compression_demo.py
 ```
 
 ---
