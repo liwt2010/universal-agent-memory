@@ -16,7 +16,7 @@ We take security seriously. If you discover a security vulnerability in UAMS, pl
 
 Instead, please report security issues by emailing the maintainers directly at:
 
-📧 **security@uams.dev** (placeholder — update with actual contact)
+📧 **liwt06@126.com**
 
 Please include:
 - A description of the vulnerability

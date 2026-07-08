@@ -413,6 +413,23 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines and [CODE_OF_COND
 
 ---
 
+## 🛠️ Maintenance & Support
+
+**Maintainer**: liwt2010 (`liwt06@126.com`)
+
+| Issue type | Where to report | First response | Resolution target |
+|------------|-----------------|----------------|-------------------|
+| **Security vulnerability** | See [SECURITY.md](SECURITY.md) | 48 hours | 14-30 days (severity-dependent) |
+| **Bug report** | GitHub Issues | 7 days | 30-90 days |
+| **Feature request** | GitHub Issues | 14 days | Best effort |
+| **General question** | GitHub Discussions | 7 days | Community-driven |
+
+**Versioning**: UAMS follows [Semantic Versioning](https://semver.org/). The `0.1.x` line is the currently supported line; breaking changes bump the major version and follow the deprecation policy below.
+
+**Deprecation policy**: Features marked deprecated in [CHANGELOG.md](CHANGELOG.md) remain functional for at least one minor release cycle (≥ 90 days) before removal. Deprecation warnings are emitted at runtime.
+
+---
+
 ## 📜 License
 
 MIT License — see [LICENSE](LICENSE) for details.
