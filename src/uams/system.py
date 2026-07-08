@@ -73,7 +73,10 @@ class UniversalMemorySystem(EventHandler):
         self._dedup = dedup_window or DeduplicationWindow(
             window_seconds=self._config.dedup_window_seconds
         )
-        self._compression = compression or HeuristicCompressionEngine()
+        self._compression = compression
+        if self._compression is None:
+            self._compression = self._build_compression_engine()
+
         self._retrieval = RetrievalPipeline(
             self._stores,
             rrf_k=self._config.rrf_k,
@@ -82,7 +85,11 @@ class UniversalMemorySystem(EventHandler):
         self._forgetting = ForgettingEngine(self._stores)
         self._coordinator: Optional[MultiAgentCoordinator] = None
 
-        self._embedding_fn = embedding_fn
+        # Embedding callable: explicit kwarg wins; otherwise build from config.
+        if embedding_fn is not None:
+            self._embedding_fn = embedding_fn
+        else:
+            self._embedding_fn = self._build_embedding_fn()
 
         # Register ourselves on the event bus for consolidation triggers
         self._bus.subscribe(self, [EventType.SESSION_END, EventType.SUBSESSION_END])
@@ -90,6 +97,106 @@ class UniversalMemorySystem(EventHandler):
         # Session tracking: session_id -> list of events
         self._session_events: Dict[str, List[AgentEvent]] = {}
         self._session_lock = threading.RLock()
+
+    def _build_compression_engine(self):
+        """Construct the compression engine.
+
+        Uses ``LLMCompressionEngine`` when ``llm_enabled=True`` and an API key
+        is configured. Falls back to ``HeuristicCompressionEngine`` on any
+        initialization failure so the agent loop never stalls.
+        """
+        if not (self._config.llm_enabled and self._config.llm_api_key):
+            return HeuristicCompressionEngine()
+
+        try:
+            from uams.llm.client import CachedLLMClient, OpenAICompatibleClient
+            from uams.pipeline.llm_compression import LLMCompressionEngine
+
+            inner = OpenAICompatibleClient(
+                api_key=self._config.llm_api_key,
+                base_url=self._config.llm_base_url,
+                model=self._config.llm_model,
+                timeout=self._config.llm_timeout_seconds,
+                max_retries=self._config.llm_max_retries,
+            )
+            client = (
+                CachedLLMClient(inner, max_entries=self._config.llm_cache_max_entries)
+                if self._config.llm_cache_enabled
+                else inner
+            )
+            engine = LLMCompressionEngine(
+                client,
+                max_events_per_call=self._config.llm_compression_max_events,
+                target_ratio=self._config.llm_compression_target_ratio,
+                timeout=self._config.llm_timeout_seconds,
+            )
+            logger.info(
+                "LLM compression engine enabled | provider=%s model=%s base_url=%s",
+                self._config.llm_provider,
+                self._config.llm_model,
+                self._config.llm_base_url,
+            )
+            return engine
+        except Exception:
+            logger.exception(
+                "Failed to initialize LLMCompressionEngine; falling back to HeuristicCompressionEngine"
+            )
+            return HeuristicCompressionEngine()
+
+    def _build_embedding_fn(self):
+        """Build the embedding callable from config.
+
+        Returns ``None`` when no embedding is configured, which causes the
+        system to fall back to BM25 + graph retrieval only.
+        """
+        if not self._config.embedding_enabled:
+            return None
+        if self._config.embedding_provider == "noop":
+            return None
+        try:
+            provider = self._build_embedding_provider()
+        except Exception:
+            logger.exception(
+                "Failed to initialize embedding provider '%s'; "
+                "falling back to noop embedding (vector search disabled)",
+                self._config.embedding_provider,
+            )
+            return None
+        if self._config.embedding_cache_enabled:
+            from uams.embedding.client import CachedEmbeddingProvider
+            provider = CachedEmbeddingProvider(
+                provider, max_entries=self._config.embedding_cache_max_entries
+            )
+        logger.info(
+            "Embedding provider enabled | provider=%s model=%s dimension=%d",
+            self._config.embedding_provider,
+            getattr(provider, "model_name", "?"),
+            self._config.embedding_dimension,
+        )
+        return provider.embed
+
+    def _build_embedding_provider(self):
+        """Construct the configured embedding provider."""
+        if self._config.embedding_provider == "sentence_transformers":
+            from uams.embedding.client import SentenceTransformersProvider
+            return SentenceTransformersProvider(
+                model_name=self._config.embedding_model,
+                device=self._config.embedding_device,
+                batch_size=self._config.embedding_batch_size,
+            )
+        if self._config.embedding_provider == "openai_compatible":
+            from uams.embedding.client import OpenAICompatibleEmbeddingProvider
+            return OpenAICompatibleEmbeddingProvider(
+                api_key=self._config.embedding_api_key,
+                base_url=self._config.embedding_base_url,
+                model=self._config.embedding_remote_model,
+                timeout=self._config.embedding_timeout_seconds,
+                max_retries=self._config.embedding_max_retries,
+            )
+        # Should be unreachable given validate(); be defensive
+        raise ValueError(
+            f"Unknown embedding_provider: {self._config.embedding_provider}"
+        )
 
     def _init_stores_from_config(self) -> Dict[MemoryType, MemoryStore]:
         """Initialize storage backends based on configuration."""
