@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **LLM-backed compression engine** (`LLMCompressionEngine`) inheriting `CompressionEngine`
+  - Episodic summarization with two-level batching for long sessions
+  - Semantic extraction via JSON-array output (tolerant of `\`\`\`json` fences)
+  - Procedural pattern detection across episodes
+  - Auto-fallback to `HeuristicCompressionEngine` on any LLM failure
+- **OpenAI-compatible LLM client** (`OpenAICompatibleClient`) — works with OpenAI / MiniMax / ollama / vLLM via `base_url` configuration
+- **`NullLLMClient`** + **`CachedLLMClient`** (in-process LRU by messages+kwargs hash)
+- **Pluggable embedding providers**: `SentenceTransformersProvider` (local) and `OpenAICompatibleEmbeddingProvider` (remote) + `CachedEmbeddingProvider` (LRU)
+- **Production-safety config validation** with environment strictness ladder (`development` / `staging` / `production`)
+  - Rejects insecure default credentials on Neo4j / PostgreSQL / Redis in production
+  - Requires TLS on credentialed backends in production
+  - Bounds half-life (60s–10y), timeouts, identity-length fields
+  - 30+ new `UAMSConfig` fields for LLM + embedding
+- **Maintainer / response SLA**: `pyproject.toml` authors + `SECURITY.md` contact + `README.md` Maintenance & Support section (security 48h ack, bugs 7d, features 14d)
+- **74 new tests** (105 → 174 total) covering config validation, LLM compression, embedding providers
+- **`docs/PR1-2-LLM-Compression.md`** handoff document for the LLM compression design
+- **`examples/_token_compression_demo.py`** benchmark demonstrating 72% token savings (20-event session: 300 → 84 tokens)
 - PostgreSQL enterprise backend with connection pooling, JSONB, GIN indexes, and schema migrations
 - Configuration validation system with 12+ constraints
 - Exponential backoff retry mechanism with global statistics

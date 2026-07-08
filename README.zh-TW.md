@@ -172,6 +172,76 @@ UAMS 以人類認知架構為藍本建模記憶。每一層擁有獨立的儲存
 
 ---
 
+## 🧠 LLM 壓縮(可選)
+
+預設關閉 —— UAMS 內建 **啟發式壓縮引擎**,無需 LLM 依賴即可執行。啟用 **LLM 壓縮** 可在長會話場景獲得真實 token 節省。
+
+```bash
+# OpenAI
+export UAMS_LLM_ENABLED=true
+export UAMS_LLM_API_KEY=sk-...
+export UAMS_LLM_MODEL=gpt-4o-mini
+
+# MiniMax (OpenAI 相容)
+export UAMS_LLM_ENABLED=true
+export UAMS_LLM_API_KEY=<minimax-key>
+export UAMS_LLM_BASE_URL=https://api.minimaxi.com/v1
+export UAMS_LLM_MODEL=MiniMax-Text-01
+
+# 本機 ollama(OpenAI 相容模式)
+export UAMS_LLM_ENABLED=true
+export UAMS_LLM_API_KEY=ollama        # 必填但不使用
+export UAMS_LLM_BASE_URL=http://localhost:11434/v1
+export UAMS_LLM_MODEL=llama3.1
+```
+
+**LLM 在壓縮各階段做什麼**:
+
+| 階段 | 啟發式(預設) | LLM 壓縮 |
+|------|--------------|---------|
+| 情景記憶壓縮 | 拼接 `[TYPE] content\n...`(≈原始 token 數) | 摘要為約 200 字敘述(有界) |
+| 語義記憶抽取 | 僅挑選 `(str/int/float/bool)` 結構化欄位 | LLM 抽取原子事實(JSON) |
+| 程序模式識別 | 統計 category 出現次數(≥2) | LLM 識別重複工作流 |
+
+**實測節省**(20 事件會話):
+
+```
+啟發式:  300 tokens  (原始 100%)
+LLM:      84 tokens  (原始  28%)  → 72% 節省
+```
+
+如果 LLM 呼叫失敗(網路/配額/逾時),UAMS **自動降級**到啟發式壓縮,agent 主迴圈不會卡住。詳見 [docs/PR1-2-LLM-Compression.md](docs/PR1-2-LLM-Compression.md)。
+
+---
+
+## 🔌 可插拔 Embedding 提供方
+
+預設關閉 —— UAMS 退化為 **BM25 + 圖譜檢索**(RRF 3 路中的 2 路)。啟用後可獲得完整混合檢索管線。
+
+| 提供方 | 模式 | 安裝 | 適用場景 |
+|--------|------|------|---------|
+| **NoOp** | 無 | 內建 | 關閉向量檢索,純 BM25 + 圖譜 |
+| **SentenceTransformers** | 本機 | `pip install "uams[embeddings]"` | 離線/內網部署,預設 `all-MiniLM-L6-v2`(384 維) |
+| **OpenAI 相容** | 遠端 | `pip install "uams[llm]"` | OpenAI / MiniMax / ollama / vLLM(設定 `UAMS_EMBEDDING_BASE_URL`) |
+
+```bash
+# 本機 sentence-transformers
+export UAMS_EMBEDDING_ENABLED=true
+export UAMS_EMBEDDING_PROVIDER=sentence_transformers
+export UAMS_EMBEDDING_MODEL=all-MiniLM-L6-v2
+
+# 遠端 OpenAI 相容
+export UAMS_EMBEDDING_ENABLED=true
+export UAMS_EMBEDDING_PROVIDER=openai_compatible
+export UAMS_EMBEDDING_API_KEY=<key>
+export UAMS_EMBEDDING_BASE_URL=https://api.openai.com/v1
+export UAMS_EMBEDDING_REMOTE_MODEL=text-embedding-3-small
+```
+
+所有提供方共享統一的 **LRU 緩存**(預設 5000 條),避免重複 embedding 呼叫。任何提供方初始化失敗都會降級到 NoOp 並打 WARNING 日誌 —— 檢索自動回退到 BM25 + 圖譜。
+
+---
+
 ## 多智能體支援
 
 UAMS 透過三個原語實現多智能體之間的協調：**租約（Lease）**、**訊號（Signal）** 和 **共享記憶空間**。
