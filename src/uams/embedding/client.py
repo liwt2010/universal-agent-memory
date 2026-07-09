@@ -6,7 +6,9 @@ adds concrete providers and a cache wrapper:
 - ``NoOpEmbeddingProvider``   -- already in base; aliased for convenience
 - ``SentenceTransformersProvider`` -- local model (lazy import)
 - ``OpenAICompatibleEmbeddingProvider`` -- remote, OpenAI-compatible (MiniMax, etc.)
-- ``CachedEmbeddingProvider`` -- LRU cache wrapper around any provider
+- ``CachedEmbeddingProvider`` -- LRU cache wrapper around any provider,
+  also supports external (e.g. Redis) cache via ``cache_get``/``cache_put``
+  callables for cross-process cache sharing.
 
 The ``openai`` and ``sentence-transformers`` packages are imported lazily
 inside the constructors, so the rest of ``uams`` does not require them.
@@ -17,8 +19,9 @@ Install with ``pip install 'universal-agent-memory[embeddings]'`` or
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
-from typing import Iterable, List, Optional
+from typing import Callable, Iterable, List, Optional
 
 from uams.embedding.base import EmbeddingProvider, NoOpEmbeddingProvider
 
@@ -137,34 +140,69 @@ class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
 class CachedEmbeddingProvider(EmbeddingProvider):
     """LRU cache wrapping any ``EmbeddingProvider``.
 
-    Cache key = SHA-256(inner class name + text). Thread-safe via RLock.
+    Cache key = SHA-256(inner class name + text). Thread-safe via RLock
+    when using the in-process backend.
+
+    For cross-process sharing (e.g. multiple UAMS worker pods), pass
+    ``cache_get`` / ``cache_put`` callables. Values are JSON-serialized
+    (``[v0, v1, ...]``) at the call layer so the external backend only
+    needs to handle strings.
     """
 
-    def __init__(self, inner: EmbeddingProvider, max_entries: int = 5000):
+    def __init__(
+        self,
+        inner: EmbeddingProvider,
+        max_entries: int = 5000,
+        cache_get: Optional[Callable[[str], Optional[str]]] = None,
+        cache_put: Optional[Callable[[str, str], None]] = None,
+    ):
         self._inner = inner
-        self._max = max(1, int(max_entries))
-        self._cache: dict = {}
-        self._lock = threading.RLock()
+        self._external = cache_get is not None and cache_put is not None
+        if self._external:
+            self._cache_get = cache_get
+            self._cache_put = cache_put
+        else:
+            self._max = max(1, int(max_entries))
+            self._cache: dict = {}
+            self._lock = threading.RLock()
 
     def _key(self, text: str) -> str:
         payload = f"{self._inner.__class__.__name__}|{text}"
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
+    @staticmethod
+    def _serialize(vec: List[float]) -> str:
+        return json.dumps(list(vec))
+
+    @staticmethod
+    def _deserialize(raw: str) -> List[float]:
+        try:
+            return [float(x) for x in json.loads(raw)]
+        except Exception:
+            return []
+
     def embed(self, text: str) -> List[float]:
         key = self._key(text)
-        with self._lock:
-            cached = self._cache.get(key)
-        if cached is not None:
-            return list(cached)
+        if self._external:
+            raw = self._cache_get(key)
+            if raw is not None:
+                return self._deserialize(raw)
+        else:
+            with self._lock:
+                cached = self._cache.get(key)
+            if cached is not None:
+                return list(cached)
         result = list(self._inner.embed(text))
-        with self._lock:
-            if len(self._cache) >= self._max:
-                self._cache.pop(next(iter(self._cache)))
-            self._cache[key] = result
+        if self._external:
+            self._cache_put(key, self._serialize(result))
+        else:
+            with self._lock:
+                if len(self._cache) >= self._max:
+                    self._cache.pop(next(iter(self._cache)))
+                self._cache[key] = result
         return result
 
     def embed_batch(self, texts: Iterable[str]) -> List[List[float]]:
-        # Batch as much as possible; fall back to per-item for misses to reuse cache
         texts = list(texts)
         if not texts:
             return []
@@ -172,9 +210,17 @@ class CachedEmbeddingProvider(EmbeddingProvider):
         misses_idx: List[int] = []
         misses_text: List[str] = []
         results: List[Optional[List[float]]] = [None] * len(texts)
-        with self._lock:
-            for i, k in enumerate(keys):
-                hit = self._cache.get(k)
+        for i, k in enumerate(keys):
+            if self._external:
+                raw = self._cache_get(k)
+                if raw is not None:
+                    results[i] = self._deserialize(raw)
+                else:
+                    misses_idx.append(i)
+                    misses_text.append(texts[i])
+            else:
+                with self._lock:
+                    hit = self._cache.get(k)
                 if hit is not None:
                     results[i] = list(hit)
                 else:
@@ -182,13 +228,16 @@ class CachedEmbeddingProvider(EmbeddingProvider):
                     misses_text.append(texts[i])
         if misses_text:
             new_vectors = self._inner.embed_batch(misses_text)
-            with self._lock:
-                for j, vec in zip(misses_idx, new_vectors):
-                    results[j] = list(vec)
-                    key = keys[j]
-                    if len(self._cache) >= self._max:
-                        self._cache.pop(next(iter(self._cache)))
-                    self._cache[key] = list(vec)
+            for j, vec in zip(misses_idx, new_vectors):
+                results[j] = list(vec)
+                key = keys[j]
+                if self._external:
+                    self._cache_put(key, self._serialize(vec))
+                else:
+                    with self._lock:
+                        if len(self._cache) >= self._max:
+                            self._cache.pop(next(iter(self._cache)))
+                        self._cache[key] = list(vec)
         return [r if r is not None else [] for r in results]
 
 

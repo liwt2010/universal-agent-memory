@@ -6,7 +6,7 @@ so that the rest of ``uams`` does not require it. Install with
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 import hashlib
 import logging
 import threading
@@ -91,28 +91,53 @@ class NullLLMClient(LLMClient):
 class CachedLLMClient(LLMClient):
     """Wraps another client with a (messages, kwargs) -> response cache.
 
-    Bounded LRU to avoid unbounded memory growth. Thread-safe via RLock.
+    Bounded LRU by default. To share cache across processes, pass
+    ``cache_get`` / ``cache_put`` callables (e.g. from
+    ``RedisCacheBackend``). When both are provided, the in-process LRU
+    is bypassed entirely and every read/write goes through the external
+    backend — which is expected to be shared across workers.
+
+    Thread-safe via RLock when using the in-process backend.
     """
 
-    def __init__(self, inner: LLMClient, max_entries: int = 1000):
+    def __init__(
+        self,
+        inner: LLMClient,
+        max_entries: int = 1000,
+        cache_get: Optional[Callable[[str], Optional[str]]] = None,
+        cache_put: Optional[Callable[[str, str], None]] = None,
+    ):
         self._inner = inner
-        self._max = max(1, int(max_entries))
-        self._cache: Dict[str, str] = {}
-        self._lock = threading.RLock()
+        self._external = cache_get is not None and cache_put is not None
+        if self._external:
+            self._cache_get = cache_get
+            self._cache_put = cache_put
+        else:
+            self._max = max(1, int(max_entries))
+            self._cache: Dict[str, str] = {}
+            self._lock = threading.RLock()
 
     def chat(self, messages, **kwargs):
         key_payload = repr(messages) + "|" + repr(sorted(kwargs.items()))
         key = hashlib.sha256(key_payload.encode("utf-8")).hexdigest()
-        with self._lock:
-            cached = self._cache.get(key)
+        # Cache lookup
+        if self._external:
+            cached = self._cache_get(key)
+        else:
+            with self._lock:
+                cached = self._cache.get(key)
         if cached is not None:
             return cached
         result = self._inner.chat(messages, **kwargs)
-        with self._lock:
-            if len(self._cache) >= self._max:
-                # Drop oldest (insertion-ordered dict semantics in py3.7+)
-                self._cache.pop(next(iter(self._cache)))
-            self._cache[key] = result
+        # Cache write
+        if self._external:
+            self._cache_put(key, result)
+        else:
+            with self._lock:
+                if len(self._cache) >= self._max:
+                    # Drop oldest (insertion-ordered dict semantics in py3.7+)
+                    self._cache.pop(next(iter(self._cache)))
+                self._cache[key] = result
         return result
 
     def is_available(self) -> bool:

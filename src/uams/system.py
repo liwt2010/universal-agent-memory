@@ -120,10 +120,10 @@ class UniversalMemorySystem(EventHandler):
                 timeout=self._config.llm_timeout_seconds,
                 max_retries=self._config.llm_max_retries,
             )
-            client = (
-                CachedLLMClient(inner, max_entries=self._config.llm_cache_max_entries)
-                if self._config.llm_cache_enabled
-                else inner
+            client = self._wrap_with_cache(
+                inner,
+                in_process_max_entries=self._config.llm_cache_max_entries,
+                in_process_cache_enabled=self._config.llm_cache_enabled,
             )
             engine = LLMCompressionEngine(
                 client,
@@ -221,12 +221,11 @@ class UniversalMemorySystem(EventHandler):
                 timeout=self._config.query_rewrite_timeout_seconds,
                 max_retries=self._config.llm_max_retries,
             )
-            if self._config.query_rewrite_cache_enabled:
-                client = CachedLLMClient(
-                    inner, max_entries=self._config.query_rewrite_cache_max_entries
-                )
-            else:
-                client = inner
+            client = self._wrap_with_cache(
+                inner,
+                in_process_max_entries=self._config.query_rewrite_cache_max_entries,
+                in_process_cache_enabled=self._config.query_rewrite_cache_enabled,
+            )
             return QueryRewriter(
                 llm_client=client,
                 max_variants=self._config.query_rewrite_max_variants,
@@ -238,6 +237,52 @@ class UniversalMemorySystem(EventHandler):
                 "Failed to initialize QueryRewriter; query rewriting disabled for this session"
             )
             return None
+
+    def _build_cache_backend(self):
+        """Build the configured cache backend (memory or Redis).
+
+        Returns ``None`` for ``memory`` (cached clients use their in-process
+        LRU). Returns a ``RedisCacheBackend`` for ``redis`` (cross-process
+        sharing). Silently falls back to ``None`` if Redis is unavailable.
+        """
+        if self._config.cache_backend != "redis":
+            return None
+        try:
+            from uams.cache.redis_backend import RedisCacheBackend
+            return RedisCacheBackend(
+                host=self._config.redis_cache_host,
+                port=self._config.redis_cache_port,
+                db=self._config.redis_cache_db,
+                password=self._config.redis_cache_password,
+                ttl_seconds=self._config.redis_cache_ttl_seconds,
+                key_prefix=self._config.redis_cache_key_prefix,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to initialize RedisCacheBackend; falling back to in-process LRU"
+            )
+            return None
+
+    def _wrap_with_cache(
+        self,
+        inner: "LLMClient",
+        in_process_max_entries: int,
+        in_process_cache_enabled: bool,
+    ) -> "LLMClient":
+        """Wrap an LLM client with cache (Redis if configured, else in-process LRU)."""
+        redis_backend = self._build_cache_backend()
+        if redis_backend is not None:
+            from uams.llm.client import CachedLLMClient
+            return CachedLLMClient(
+                inner,
+                max_entries=in_process_max_entries,
+                cache_get=redis_backend.cache_get_callable(),
+                cache_put=redis_backend.cache_put_callable(),
+            )
+        if in_process_cache_enabled:
+            from uams.llm.client import CachedLLMClient
+            return CachedLLMClient(inner, max_entries=in_process_max_entries)
+        return inner
 
     def _init_stores_from_config(self) -> Dict[MemoryType, MemoryStore]:
         """Initialize storage backends based on configuration."""

@@ -120,6 +120,14 @@ class UAMSConfig:
     # --- Embedding Provider (optional) ---
     embedding_enabled: bool = False
     embedding_provider: str = "noop"  # "noop" | "sentence_transformers" | "openai_compatible"
+    # --- Cross-Process Cache (optional, opt-in) ---
+    cache_backend: str = "memory"  # "memory" | "redis"
+    redis_cache_host: str = "localhost"
+    redis_cache_port: int = 6379
+    redis_cache_db: int = 0
+    redis_cache_password: Optional[str] = None
+    redis_cache_ttl_seconds: Optional[float] = None  # None = no expiry
+    redis_cache_key_prefix: str = "uams:cache:"
     # --- Query Rewriting (optional, opt-in) ---
     query_rewrite_enabled: bool = False
     query_rewrite_max_variants: int = 4
@@ -269,6 +277,13 @@ class UAMSConfig:
             postgresql_pool_max=cls._env_int("UAMS_POSTGRESQL_POOL_MAX", 10),
             embedding_enabled=cls._env_bool("UAMS_EMBEDDING_ENABLED", False),
             embedding_provider=cls._env_str("UAMS_EMBEDDING_PROVIDER", "noop"),
+            cache_backend=cls._env_str("UAMS_CACHE_BACKEND", "memory"),
+            redis_cache_host=cls._env_str("UAMS_REDIS_CACHE_HOST", "localhost"),
+            redis_cache_port=cls._env_int("UAMS_REDIS_CACHE_PORT", 6379),
+            redis_cache_db=cls._env_int("UAMS_REDIS_CACHE_DB", 0),
+            redis_cache_password=os.getenv("UAMS_REDIS_CACHE_PASSWORD", None),
+            redis_cache_ttl_seconds=cls._env_optional_float("UAMS_REDIS_CACHE_TTL"),
+            redis_cache_key_prefix=cls._env_str("UAMS_REDIS_CACHE_PREFIX", "uams:cache:"),
             query_rewrite_enabled=cls._env_bool("UAMS_QUERY_REWRITE_ENABLED", False),
             query_rewrite_max_variants=cls._env_int("UAMS_QUERY_REWRITE_MAX_VARIANTS", 4),
             query_rewrite_timeout_seconds=cls._env_float("UAMS_QUERY_REWRITE_TIMEOUT", 5.0),
@@ -449,6 +464,19 @@ class UAMSConfig:
             errors.append("embedding_batch_size must be between 1 and 2048")
         if self.embedding_cache_max_entries < 1:
             errors.append("embedding_cache_max_entries must be >= 1")
+
+        # --- Cross-Process Cache ---
+        if self.cache_backend not in ("memory", "redis"):
+            errors.append(
+                f"cache_backend must be memory|redis, got {self.cache_backend!r}"
+            )
+        if self.cache_backend == "redis":
+            if self.redis_cache_port < 1 or self.redis_cache_port > 65535:
+                errors.append("redis_cache_port must be between 1 and 65535")
+            if self.redis_cache_db < 0 or self.redis_cache_db > 15:
+                errors.append("redis_cache_db must be between 0 and 15")
+            if self.redis_cache_ttl_seconds is not None and self.redis_cache_ttl_seconds <= 0:
+                errors.append("redis_cache_ttl_seconds must be > 0 when set")
 
         # --- Audit log coupling ---
         if self.enable_audit_log and not self.audit_log_path:
