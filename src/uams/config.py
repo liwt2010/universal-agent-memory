@@ -120,6 +120,14 @@ class UAMSConfig:
     # --- Embedding Provider (optional) ---
     embedding_enabled: bool = False
     embedding_provider: str = "noop"  # "noop" | "sentence_transformers" | "openai_compatible"
+    # --- Query Rewriting (optional, opt-in) ---
+    query_rewrite_enabled: bool = False
+    query_rewrite_max_variants: int = 4
+    query_rewrite_timeout_seconds: float = 5.0
+    query_rewrite_cache_enabled: bool = True
+    query_rewrite_cache_max_entries: int = 1000
+    # Reuse llm_* fields for the rewriter's LLMClient
+    # (so query rewriting shares the same OpenAI/MiniMax config as compression)
     embedding_model: str = "all-MiniLM-L6-v2"  # local default
     embedding_remote_model: str = "text-embedding-3-small"
     embedding_api_key: Optional[str] = None
@@ -261,6 +269,11 @@ class UAMSConfig:
             postgresql_pool_max=cls._env_int("UAMS_POSTGRESQL_POOL_MAX", 10),
             embedding_enabled=cls._env_bool("UAMS_EMBEDDING_ENABLED", False),
             embedding_provider=cls._env_str("UAMS_EMBEDDING_PROVIDER", "noop"),
+            query_rewrite_enabled=cls._env_bool("UAMS_QUERY_REWRITE_ENABLED", False),
+            query_rewrite_max_variants=cls._env_int("UAMS_QUERY_REWRITE_MAX_VARIANTS", 4),
+            query_rewrite_timeout_seconds=cls._env_float("UAMS_QUERY_REWRITE_TIMEOUT", 5.0),
+            query_rewrite_cache_enabled=cls._env_bool("UAMS_QUERY_REWRITE_CACHE", True),
+            query_rewrite_cache_max_entries=cls._env_int("UAMS_QUERY_REWRITE_CACHE_MAX", 1000),
             embedding_model=cls._env_str("UAMS_EMBEDDING_MODEL", "all-MiniLM-L6-v2"),
             embedding_remote_model=cls._env_str("UAMS_EMBEDDING_REMOTE_MODEL", "text-embedding-3-small"),
             embedding_api_key=os.getenv("UAMS_EMBEDDING_API_KEY", None),
@@ -440,6 +453,20 @@ class UAMSConfig:
         # --- Audit log coupling ---
         if self.enable_audit_log and not self.audit_log_path:
             errors.append("audit_log_path must be set when enable_audit_log=True")
+
+        # --- Query Rewriting ---
+        if self.query_rewrite_max_variants < 1 or self.query_rewrite_max_variants > 8:
+            errors.append("query_rewrite_max_variants must be between 1 and 8")
+        if self.query_rewrite_timeout_seconds < 0.5 or self.query_rewrite_timeout_seconds > 60:
+            errors.append("query_rewrite_timeout_seconds must be between 0.5 and 60")
+        if self.query_rewrite_cache_max_entries < 1:
+            errors.append("query_rewrite_cache_max_entries must be >= 1")
+        # If rewriting is enabled, it needs an LLM client (same as compression)
+        if self.query_rewrite_enabled and not (self.llm_enabled and self.llm_api_key):
+            errors.append(
+                "query_rewrite_enabled=True requires llm_enabled=True with llm_api_key "
+                "(query rewriting reuses the LLM compression client)"
+            )
 
         # --- Production / staging safety ---
         if self.environment in ("staging", "production"):

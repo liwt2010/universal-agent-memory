@@ -81,6 +81,7 @@ class UniversalMemorySystem(EventHandler):
             self._stores,
             rrf_k=self._config.rrf_k,
             token_estimator=get_default_estimator(),
+            query_rewriter=self._build_query_rewriter(),
         )
         self._forgetting = ForgettingEngine(self._stores)
         self._coordinator: Optional[MultiAgentCoordinator] = None
@@ -197,6 +198,46 @@ class UniversalMemorySystem(EventHandler):
         raise ValueError(
             f"Unknown embedding_provider: {self._config.embedding_provider}"
         )
+
+    def _build_query_rewriter(self):
+        """Build the optional ``QueryRewriter`` from config.
+
+        Returns ``None`` when query rewriting is disabled or when no LLM
+        client can be constructed. Rewriter shares the same LLM client
+        configuration (api_key, base_url, model) as the compression engine.
+        """
+        if not self._config.query_rewrite_enabled:
+            return None
+        if not (self._config.llm_enabled and self._config.llm_api_key):
+            return None
+        try:
+            from uams.llm.client import CachedLLMClient, OpenAICompatibleClient
+            from uams.pipeline.query_rewrite import QueryRewriter
+
+            inner = OpenAICompatibleClient(
+                api_key=self._config.llm_api_key,
+                base_url=self._config.llm_base_url,
+                model=self._config.llm_model,
+                timeout=self._config.query_rewrite_timeout_seconds,
+                max_retries=self._config.llm_max_retries,
+            )
+            if self._config.query_rewrite_cache_enabled:
+                client = CachedLLMClient(
+                    inner, max_entries=self._config.query_rewrite_cache_max_entries
+                )
+            else:
+                client = inner
+            return QueryRewriter(
+                llm_client=client,
+                max_variants=self._config.query_rewrite_max_variants,
+                timeout=self._config.query_rewrite_timeout_seconds,
+                cache_max_entries=self._config.query_rewrite_cache_max_entries,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to initialize QueryRewriter; query rewriting disabled for this session"
+            )
+            return None
 
     def _init_stores_from_config(self) -> Dict[MemoryType, MemoryStore]:
         """Initialize storage backends based on configuration."""

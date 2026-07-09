@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from uams.core.enums import MemoryType
 from uams.core.models import AgentContext, Memory
+from uams.pipeline.query_rewrite import QueryRewriter
 from uams.storage.base import MemoryStore
 
 
@@ -17,6 +18,9 @@ class RetrievalPipeline:
     3. Graph traversal (if entity relations exist)
 
     Fused with Reciprocal Rank Fusion (RRF) and session-diversified.
+
+    Optional ``QueryRewriter`` (opt-in) expands the user query into
+    3-5 variants for higher recall on short/ambiguous queries.
     """
 
     def __init__(
@@ -24,10 +28,12 @@ class RetrievalPipeline:
         stores: Dict[MemoryType, MemoryStore],
         rrf_k: int = 60,
         token_estimator: Optional[Any] = None,
+        query_rewriter: Optional[QueryRewriter] = None,
     ):
         self._stores = stores
         self._rrf_k = rrf_k
         self._token_estimator = token_estimator
+        self._query_rewriter = query_rewriter
 
     def retrieve(
         self,
@@ -51,32 +57,37 @@ class RetrievalPipeline:
         """
         all_results: Dict[str, List[tuple]] = defaultdict(list)
 
-        # 1. Working tier (hot cache)
-        working_results = self._stores[MemoryType.WORKING].search_keywords(query, k=10)
-        for rank, mem in enumerate(working_results):
-            all_results[str(mem.id)].append((mem, rank, "working"))
+        # Optional: expand query into variants for higher recall.
+        # If disabled or no rewriter is configured, variants == [query].
+        queries = self._expand_queries(query)
 
-        # 2. BM25 across long-term tiers
-        for tier in (MemoryType.EPISODIC, MemoryType.SEMANTIC, MemoryType.PROCEDURAL):
-            if tier in self._stores:
-                results = self._stores[tier].search_keywords(query, k=10)
-                for rank, mem in enumerate(results):
-                    all_results[str(mem.id)].append((mem, rank, "bm25"))
+        for variant in queries:
+            # 1. Working tier (hot cache)
+            working_results = self._stores[MemoryType.WORKING].search_keywords(variant, k=10)
+            for rank, mem in enumerate(working_results):
+                all_results[str(mem.id)].append((mem, rank, "working"))
 
-        # 3. Vector similarity
-        if vector is not None:
-            for tier in self._stores:
-                results = self._stores[tier].search_vector(vector, k=10)
-                for rank, mem in enumerate(results):
-                    all_results[str(mem.id)].append((mem, rank, "vector"))
+            # 2. BM25 across long-term tiers
+            for tier in (MemoryType.EPISODIC, MemoryType.SEMANTIC, MemoryType.PROCEDURAL):
+                if tier in self._stores:
+                    results = self._stores[tier].search_keywords(variant, k=10)
+                    for rank, mem in enumerate(results):
+                        all_results[str(mem.id)].append((mem, rank, "bm25"))
 
-        # 4. Graph: treat query words as entities (limit to first 3 non-empty tokens to avoid explosion)
-        entities = [w for w in query.split() if w.strip()][:3]
-        for entity in entities:
-            for tier in self._stores:
-                results = self._stores[tier].search_graph(entity, depth=2)
-                for rank, mem in enumerate(results):
-                    all_results[str(mem.id)].append((mem, rank, "graph"))
+            # 3. Vector similarity (only for original query to avoid N calls)
+            if vector is not None and variant == query:
+                for tier in self._stores:
+                    results = self._stores[tier].search_vector(vector, k=10)
+                    for rank, mem in enumerate(results):
+                        all_results[str(mem.id)].append((mem, rank, "vector"))
+
+            # 4. Graph: treat query words as entities (limit to first 3 non-empty tokens to avoid explosion)
+            entities = [w for w in variant.split() if w.strip()][:3]
+            for entity in entities:
+                for tier in self._stores:
+                    results = self._stores[tier].search_graph(entity, depth=2)
+                    for rank, mem in enumerate(results):
+                        all_results[str(mem.id)].append((mem, rank, "graph"))
 
         # 5. RRF fusion + boosting
         rrf_scores: Dict[str, float] = defaultdict(float)
@@ -109,6 +120,21 @@ class RetrievalPipeline:
 
         # 7. Token budget compression (greedy by importance)
         return self._compress_to_budget(final, budget_tokens)
+
+    def _expand_queries(self, query: str) -> List[str]:
+        """Return query variants via the configured ``QueryRewriter``.
+
+        Always returns at least ``[query]`` (the original). If no rewriter
+        is configured or rewriting is disabled, this is the only entry.
+        """
+        if self._query_rewriter is None:
+            return [query]
+        try:
+            variants = self._query_rewriter.rewrite(query)
+        except Exception:
+            logger.exception("Query rewriter raised unexpectedly; using original query")
+            return [query]
+        return variants if variants else [query]
 
     def _compress_to_budget(self, memories: List[Memory], budget: int) -> List[Memory]:
         """Greedy packing by relevance density (score / tokens), respecting budget.
