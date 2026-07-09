@@ -120,6 +120,10 @@ class UAMSConfig:
     # --- Embedding Provider (optional) ---
     embedding_enabled: bool = False
     embedding_provider: str = "noop"  # "noop" | "sentence_transformers" | "openai_compatible"
+    # --- Hierarchical Compression (L1 filter + L2 keyword hint) ---
+    hierarchy_min_content_length: int = 5
+    hierarchy_drop_observation_only: bool = True
+    hierarchy_keyword_top_k: int = 10
     # --- Cross-Process Cache (optional, opt-in) ---
     cache_backend: str = "memory"  # "memory" | "redis"
     redis_cache_host: str = "localhost"
@@ -277,6 +281,9 @@ class UAMSConfig:
             postgresql_pool_max=cls._env_int("UAMS_POSTGRESQL_POOL_MAX", 10),
             embedding_enabled=cls._env_bool("UAMS_EMBEDDING_ENABLED", False),
             embedding_provider=cls._env_str("UAMS_EMBEDDING_PROVIDER", "noop"),
+            hierarchy_min_content_length=cls._env_int("UAMS_HIERARCHY_MIN_CONTENT", 5),
+            hierarchy_drop_observation_only=cls._env_bool("UAMS_HIERARCHY_DROP_OBS", True),
+            hierarchy_keyword_top_k=cls._env_int("UAMS_HIERARCHY_KEYWORD_TOP_K", 10),
             cache_backend=cls._env_str("UAMS_CACHE_BACKEND", "memory"),
             redis_cache_host=cls._env_str("UAMS_REDIS_CACHE_HOST", "localhost"),
             redis_cache_port=cls._env_int("UAMS_REDIS_CACHE_PORT", 6379),
@@ -464,6 +471,12 @@ class UAMSConfig:
             errors.append("embedding_batch_size must be between 1 and 2048")
         if self.embedding_cache_max_entries < 1:
             errors.append("embedding_cache_max_entries must be >= 1")
+
+        # --- Hierarchical Compression ---
+        if self.hierarchy_min_content_length < 1:
+            errors.append("hierarchy_min_content_length must be >= 1")
+        if self.hierarchy_keyword_top_k < 0 or self.hierarchy_keyword_top_k > 100:
+            errors.append("hierarchy_keyword_top_k must be between 0 and 100")
 
         # --- Cross-Process Cache ---
         if self.cache_backend not in ("memory", "redis"):

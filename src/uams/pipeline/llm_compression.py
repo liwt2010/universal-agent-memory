@@ -24,6 +24,7 @@ from uams.core.models import (
 )
 from uams.llm.client import LLMClient
 from uams.pipeline.compression import CompressionEngine
+from uams.pipeline.hierarchical_filter import HierarchicalFilter
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ _EPISODIC_SYSTEM = (
 
 _EPISODIC_USER_TEMPLATE = (
     "Context: agent={agent_id} user={user_id} session={session_id}\n"
+    "{keyword_hint}"
     "Events:\n{events}\n"
     "Narrative:"
 )
@@ -57,7 +59,15 @@ _PROCEDURAL_SYSTEM = (
 
 
 class LLMCompressionEngine(CompressionEngine):
-    """LLM-backed compression engine. Inherits ``CompressionEngine`` contract."""
+    """LLM-backed compression engine. Inherits ``CompressionEngine`` contract.
+
+    Two-stage pre-filter runs before the LLM call:
+      L1 — HierarchicalFilter.filter_events (drop short / pure-observation / dupes)
+      L2 — HierarchicalFilter.keyword_hint (top-K keywords prepended to user prompt)
+      L3 — Actual LLM summarization call
+    L1 and L2 are LLM-free and run on every call; if L1 filters out
+    everything, the original events are passed to L3 (graceful fallback).
+    """
 
     def __init__(
         self,
@@ -65,11 +75,13 @@ class LLMCompressionEngine(CompressionEngine):
         max_events_per_call: int = 20,
         target_ratio: float = 0.3,
         timeout: float = 30.0,
+        hierarchical_filter: Optional[HierarchicalFilter] = None,
     ):
         self._llm = llm_client
         self._max_events = max(1, int(max_events_per_call))
         self._target_ratio = float(target_ratio)
         self._timeout = float(timeout)
+        self._hfilter = hierarchical_filter or HierarchicalFilter()
 
     # --- Episodic: events -> narrative Memory ---
 
@@ -125,18 +137,27 @@ class LLMCompressionEngine(CompressionEngine):
         )
 
     def _summarize_batch(self, events: List[AgentEvent]) -> str:
-        """Call LLM to summarize a batch of events. Fallback to heuristic on error."""
+        """Call LLM to summarize a batch of events. Fallback to heuristic on error.
+
+        L1 (filter) and L2 (keyword hint) run before the LLM call to
+        reduce input volume and highlight high-signal terms. Both are
+        LLM-free and degrade gracefully.
+        """
+        # L1: structural filter
+        filtered = self._hfilter.filter_events(events)
+        # L2: keyword hint
+        keyword_hint = self._hfilter.keyword_hint(filtered)
+
         try:
-            # Drop timestamp — it adds ~10 chars per event with no value to the LLM
-            # for narrative summarization (the order of events conveys recency).
             events_text = "\n".join(
-                f"[{e.event_type.name}] {e.content}" for e in events
+                f"[{e.event_type.name}] {e.content}" for e in filtered
             )
-            ctx = events[0].agent_context
+            ctx = filtered[0].agent_context
             user_msg = _EPISODIC_USER_TEMPLATE.format(
                 agent_id=ctx.agent_id,
                 user_id=ctx.user_id or "_",
                 session_id=ctx.session_id,
+                keyword_hint=keyword_hint,
                 events=events_text,
             )
             return self._llm.chat(
@@ -152,7 +173,7 @@ class LLMCompressionEngine(CompressionEngine):
             logger.exception(
                 "LLM episodic summarization failed; using raw concatenation fallback"
             )
-            return "\n".join(f"[{e.event_type.name}] {e.content}" for e in events)
+            return "\n".join(f"[{e.event_type.name}] {e.content}" for e in filtered)
 
     # --- Semantic: episodic narrative -> atomic facts ---
 
