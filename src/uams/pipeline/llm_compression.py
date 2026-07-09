@@ -29,33 +29,30 @@ logger = logging.getLogger(__name__)
 
 
 # --- Prompt templates ---
+# Kept short and fixed so providers with prompt caching (OpenAI auto-cache on
+# stable prefix; Anthropic via cache_control; MiniMax equivalents) can reuse
+# the cached prefix across calls. Each prompt reduced ~50% from the original.
 
 _EPISODIC_SYSTEM = (
-    "You are a memory consolidation assistant. Given a chronological list of "
-    "agent events from one session, produce a single concise narrative "
-    "(<= 200 words) capturing the user's goals, decisions, and outcomes. "
-    "Preserve concrete facts (names, dates, numbers, preferences). "
-    "Output ONLY the narrative text, no preamble."
+    "Summarize events into a <=200-word narrative. "
+    "Preserve names, dates, numbers, preferences. Output only the narrative."
 )
 
 _EPISODIC_USER_TEMPLATE = (
-    "Agent context: agent_id={agent_id}, user_id={user_id}, session_id={session_id}\n\n"
-    "Events (chronological):\n{events}\n\n"
-    "Narrative summary:"
+    "Context: agent={agent_id} user={user_id} session={session_id}\n"
+    "Events:\n{events}\n"
+    "Narrative:"
 )
 
 _SEMANTIC_SYSTEM = (
-    "You are a fact extractor. Given a session narrative, extract atomic "
-    "facts about the user (preferences, traits, biographical data). "
-    "Return a JSON array of objects: [{\"key\": <short_key>, \"value\": <string>}]. "
-    "Skip transient or session-specific info. Output ONLY the JSON array."
+    "Extract atomic user facts as JSON array: "
+    "[{\"key\": str, \"value\": str}]. Skip session-specific info. Output only JSON."
 )
 
 _PROCEDURAL_SYSTEM = (
-    "You are a workflow analyzer. Given multiple session summaries, identify "
-    "recurring workflows or interaction patterns. Return a JSON array: "
-    "[{\"pattern\": <short_name>, \"description\": <one sentence>, \"frequency\": <int>}]. "
-    "Only include patterns observed in >= 2 sessions. Output ONLY the JSON array."
+    "Find recurring workflows across sessions. Return JSON array: "
+    "[{\"pattern\": str, \"description\": str, \"frequency\": int}]. "
+    "Only patterns seen >=2 times. Output only JSON."
 )
 
 
@@ -130,8 +127,10 @@ class LLMCompressionEngine(CompressionEngine):
     def _summarize_batch(self, events: List[AgentEvent]) -> str:
         """Call LLM to summarize a batch of events. Fallback to heuristic on error."""
         try:
+            # Drop timestamp — it adds ~10 chars per event with no value to the LLM
+            # for narrative summarization (the order of events conveys recency).
             events_text = "\n".join(
-                f"[{e.timestamp:.0f}|{e.event_type.name}] {e.content}" for e in events
+                f"[{e.event_type.name}] {e.content}" for e in events
             )
             ctx = events[0].agent_context
             user_msg = _EPISODIC_USER_TEMPLATE.format(
