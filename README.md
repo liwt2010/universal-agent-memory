@@ -67,7 +67,7 @@ pip install "universal-agent-memory[redis,neo4j,postgresql,chromadb]"
 ### From Source
 
 ```bash
-git clone https://github.com/uams/universal-agent-memory.git
+git clone https://github.com/liwt2010/universal-agent-memory.git
 cd universal-agent-memory
 pip install -e ".[dev]"
 ```

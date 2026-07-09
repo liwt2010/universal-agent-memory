@@ -61,5 +61,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI/CD pipeline with GitHub Actions
 - Multi-language documentation (English, 简体中文, 繁體中文)
 
-[Unreleased]: https://github.com/uams/universal-agent-memory/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/uams/universal-agent-memory/releases/tag/v0.1.0
+[Unreleased]: https://github.com/liwt2010/universal-agent-memory/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/liwt2010/universal-agent-memory/releases/tag/v0.1.0

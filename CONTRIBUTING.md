@@ -28,7 +28,7 @@ This project and everyone participating in it is governed by our [Code of Conduc
    ```
 3. **Add the upstream remote**:
    ```bash
-   git remote add upstream https://github.com/uams/universal-agent-memory.git
+   git remote add upstream https://github.com/liwt2010/universal-agent-memory.git
    ```
 4. **Create a virtual environment**:
    ```bash
@@ -59,7 +59,7 @@ python -m coverage report -m
 
 Before creating a bug report, please:
 
-1. Check the [existing issues](https://github.com/uams/universal-agent-memory/issues) to avoid duplicates
+1. Check the [existing issues](https://github.com/liwt2010/universal-agent-memory/issues) to avoid duplicates
 2. Use the [bug report template](.github/ISSUE_TEMPLATE/bug_report.md)
 
 Include:
@@ -71,7 +71,7 @@ Include:
 
 ### Suggesting Features
 
-1. Check [existing issues](https://github.com/uams/universal-agent-memory/issues) for similar suggestions
+1. Check [existing issues](https://github.com/liwt2010/universal-agent-memory/issues) for similar suggestions
 2. Use the [feature request template](.github/ISSUE_TEMPLATE/feature_request.md)
 3. Describe the use case and how it benefits the project
 
@@ -230,7 +230,7 @@ pytest tests/ -v --tb=short
 
 ## Questions?
 
-- Join our [GitHub Discussions](https://github.com/uams/universal-agent-memory/discussions)
+- Join our [GitHub Discussions](https://github.com/liwt2010/universal-agent-memory/discussions)
 - Open an issue with the [question template](.github/ISSUE_TEMPLATE/question.md)
 - Check existing documentation in `docs/`
 

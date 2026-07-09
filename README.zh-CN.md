@@ -468,7 +468,7 @@ UAMS 对**你的领域一无所知**。它只知道：
 ### 从源码安装（推荐用于开发）
 
 ```bash
-git clone https://github.com/uams/universal-agent-memory.git
+git clone https://github.com/liwt2010/universal-agent-memory.git
 cd universal-agent-memory
 pip install -e .
 ```
