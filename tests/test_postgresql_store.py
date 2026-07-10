@@ -227,9 +227,12 @@ class TestPostgreSQLStoreTTL(unittest.TestCase):
                 memory_type=MemoryType.WORKING, privacy=PrivacyLevel.PUBLIC,
             ),
         )
+        # NOTE: 99999.0 in Unix-epoch seconds is 1970-01-02, well in the past,
+        # which would falsely mark 'live' as expired. Use a far-future timestamp
+        # (year ~5138) so the row genuinely survives delete_expired().
         mem_live = Memory(
             id=MemoryId("live"),
-            anchor=TemporalAnchor(created_at=12345.0, expires_at=99999.0),
+            anchor=TemporalAnchor(created_at=time.time(), expires_at=9_999_999_999.0),
             context=AgentContext(agent_id="a", agent_type="t", session_id="s"),
             payload=MemoryPayload(raw="fresh"),
             metadata=MemoryMetadata(

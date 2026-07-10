@@ -39,20 +39,7 @@ VOLUME ["/data"]
 
 # Expose health port
 EXPOSE 3111
-
 # Default command: start a simple health server with a UAMS instance
-CMD ["python", "-c", "
-import time
-from uams.system import UniversalMemorySystem
-from uams.health import HealthServer
-from uams.utils.logging import configure_logging
-
-configure_logging('INFO')
-ums = UniversalMemorySystem()
-server = HealthServer(port=3111)
-server.start(ums_instance=ums)
-print('UAMS running with health check on :3111')
-while True:
-    time.sleep(60)
-    ums.decay_sweep()
-"]
+# (CMD array uses single-line JSON; multi-line Python lives in a file)
+COPY docker_entrypoint.py /app/docker_entrypoint.py
+CMD ["python", "/app/docker_entrypoint.py"]
