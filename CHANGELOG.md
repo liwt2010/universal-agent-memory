@@ -22,9 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Bounds half-life (60s–10y), timeouts, identity-length fields
   - 30+ new `UAMSConfig` fields for LLM + embedding
 - **Maintainer / response SLA**: `pyproject.toml` authors + `SECURITY.md` contact + `README.md` Maintenance & Support section (security 48h ack, bugs 7d, features 14d)
-- **74 new tests** (105 → 174 total) covering config validation, LLM compression, embedding providers
+- **143 new tests** (105 → 248 total) covering config validation, LLM compression, embedding providers, query rewriting, Redis cache, hierarchical filter
 - **`docs/PR1-2-LLM-Compression.md`** handoff document for the LLM compression design
 - **`examples/_token_compression_demo.py`** benchmark demonstrating 72% token savings (20-event session: 300 → 84 tokens)
+
+### Token Compression Suite (5 PRs, commit `a614389..1141398`)
+- **PR1 — Retrieval relevance density (`a614389`)**: pack memories by `score/tokens` instead of pure count; high-signal short memories beat low-signal long ones
+- **PR2 — Prompt compression (`3e3cc70`)**: trim 3 system prompts ~50% (Episodic 78→29, Semantic 68→29, Procedural 73→41) + drop event timestamps in user prompt; auto-improves cache prefix hit rate
+- **PR3 — Query rewriting (`302ee70`)**: opt-in LLM-based query rewrite + LRU cache; off by default (env `UAMS_QUERY_REWRITE_ENABLED`); graceful fallback on LLM failure
+- **PR4 — Redis cross-process cache (`4e49ca5`)**: shared cache backend for `CachedLLMClient` + `CachedEmbeddingProvider`; JSON-serialized embeddings; graceful degradation when Redis is down
+- **PR5 — Hierarchical pre-filter (`1141398`)**: L1 structural filter (drop short content / pure observation / duplicates) + L2 keyword hint (top-K TF-IDF tokens) prepended to the user prompt — LLM-free, every call
+- **Cumulative savings**: single LLM call ~55%, cross-call ~90% (Redis hit), overall session 30-50% (cold) / 70-90% (warm with cache)
+- **22 new tests** for hierarchical filter; 11 for query rewrite; 15 for Redis cache — 48 added across the suite (248 total)
+- **`docs/Token-Compression-Suite.md`**: full handoff doc (347 lines) covering 5 PRs, config keys, migration steps, per-PR pitfalls
 - PostgreSQL enterprise backend with connection pooling, JSONB, GIN indexes, and schema migrations
 - Configuration validation system with 12+ constraints
 - Exponential backoff retry mechanism with global statistics
@@ -32,7 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Migration tool for cross-backend data migration
 - Security enhancements: SQL injection protection, XSS prevention, input sanitization, rate limiting
 - Benchmark suite for performance testing (store, retrieve, search, delete)
-- 42 additional A+ grade tests covering edge cases, exception paths, and chaos scenarios
+- 42 additional enterprise-grade tests covering edge cases, exception paths, and chaos scenarios
 - Docker and docker-compose support for Redis, Neo4j, and PostgreSQL backends
 
 ### Fixed

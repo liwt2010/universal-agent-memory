@@ -2,11 +2,11 @@
   <img src="https://img.shields.io/badge/version-0.1.0-blue.svg" alt="Version 0.1.0">
   <img src="https://img.shields.io/badge/python-3.9%2B-blue.svg" alt="Python 3.9+">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT">
-  <img src="https://img.shields.io/badge/tests-174%20passing-brightgreen.svg" alt="174 Tests Passing">
+  <img src="https://img.shields.io/badge/tests-248%20passing-brightgreen.svg" alt="248 Tests Passing">
   <img src="https://img.shields.io/badge/token%20compression-72%25%20savings-success.svg" alt="Token Compression 72% Savings">
   <img src="https://img.shields.io/badge/embeddings-pluggable-blueviolet.svg" alt="Pluggable Embeddings">
   <img src="https://img.shields.io/badge/backends-6%20storage%20engines-blueviolet.svg" alt="6 Storage Backends">
-  <img src="https://img.shields.io/badge/status-A%2B%20Production%20Ready-gold.svg" alt="A+ Production Ready">
+  <img src="https://img.shields.io/badge/status-B%2B%20%2F%20A--%20Prototype-yellow.svg" alt="B+/A- Quality Prototype">
 </p>
 
 <h1 align="center">Universal Agent Memory System (UAMS)</h1>
@@ -46,7 +46,7 @@ It silently captures what your agent does, compresses it into a searchable memor
 | **Token Budget Injection** | Automatically compresses retrieved context to fit LLM windows |
 | **Pluggable Storage** | In-memory, SQLite, PostgreSQL, Redis, Neo4j, ChromaDB |
 | **Framework Agnostic** | Works with Claude, GPT, LangChain, AutoGen, or custom agents |
-| **Production Ready** | Thread-safe, error handling, graceful degradation, connection pooling, rate limiting |
+| **Production-Safe Foundation** | Thread-safe, error handling, graceful degradation, connection pooling, rate limiting *(rated B+/A- — see PRODUCTION_ASSESSMENT.md)* |
 
 ---
 
@@ -341,20 +341,24 @@ pytest tests/ -v
 pytest tests/ --cov=src/uams --cov-report=html
 ```
 
-**Test Results:** 174 tests, 0 failures, 1 skipped (ChromaDB not installed)
+**Test Results:** 248 tests, 0 failures, 1 skipped (ChromaDB not installed)
 
 | Test Category | Count | Coverage |
 |--------------|-------|----------|
-| Core models & storage | 16 | Memory, SQLite, Redis, Neo4j, PostgreSQL |
-| System integration | 10 | Observe, recall, remember, forget, stats |
-| Privacy & security | 11 | PII masking, secret redaction, SQL injection, XSS |
-| Concurrency & stress | 14 | Thread safety, 10K volume, LRU, shutdown |
-| Configuration & validation | 34 | environment strictness ladder + production safety + 30+ LLM/embedding fields |
-| LLM compression | 22 | OpenAI-compatible client, cached client, episodic/semantic/procedural |
-| Embedding providers | 20 | SentenceTransformers, OpenAI-compatible, cache, fallback |
-| Retry & benchmarks | 10 | Exponential backoff, performance metrics |
-| Backup & migration | 5 | JSONL, dict, cross-backend migration |
-| Chaos & edge cases | 4 | Truncation, Graph limits, input limits |
+| Core models & storage | 20 | MemoryId / TemporalAnchor / SQLite / multi-store roundtrip |
+| System integration | 16 | Observe, recall, remember, forget, stats, multi-agent |
+| Privacy & security | 8 | PII masking, secret redaction, OpenAI key, Bearer, UUID |
+| Concurrency & stress | 14 | Thread safety, 10K volume, LRU, shutdown persistence |
+| Configuration & validation | 27 | env ladder + 30+ LLM/embedding fields + production safety |
+| LLM compression | 22 | OpenAI-compatible client + cache + Episodic/Semantic/Procedural |
+| Query rewriting | 19 | LLM rewriter + LRU + failure fallback |
+| Embedding providers | 20 | SentenceTransformers + OpenAI-compatible + cache + fallback |
+| Retrieval | 9 | Relevance density sort + budget packing |
+| Redis cross-process cache | 24 | Backend + LLM/embedding clients + JSON + failure fallback |
+| Token compression suite (L1+L2) | 22 | Structural filter + keyword hint + LLM integration |
+| Utilities & A+ features | 31 | Retry, security, rate-limit, backup, migration, benchmark |
+| Mock storage (Redis / Neo4j) | 16 | Storage/retrieve/search/graph/PubSub/expiry |
+| **Total** | **248** | **All passing (1 skipped, ChromaDB)** |
 
 ---
 
@@ -404,7 +408,7 @@ universal-agent-memory/
 │   ├── research_agent.py
 │   ├── multi_agent.py
 │   └── _token_compression_demo.py
-├── tests/                      # 174 test cases
+├── tests/                      # 248 test cases
 │   ├── test_system.py
 │   ├── test_chaos.py
 │   ├── test_aplus.py
