@@ -164,16 +164,121 @@ class CascadeForgetter:
         return out
 
     # ------------------------------------------------------------------
-    # forget() - implementation lands in Task 5
+    # forget() - three-phase BFS cascade (spec sec 6.1)
     # ------------------------------------------------------------------
 
     def forget(
         self,
         memory_id: str,
         *,
-        strategy=None,           # CascadeStrategy | str | None
+        strategy=None,                              # CascadeStrategy | str | None
         max_depth: Optional[int] = None,
         in_edge_mode: Optional[str] = None,
-    ):
-        """Placeholder - full implementation lands in Task 5."""
-        raise NotImplementedError("Task 5 will implement.")
+    ) -> CascadeReport:
+        """Forget a memory and (per strategy) its related memories.
+
+        Three phases:
+          1. locate target tier; absent -> audit-only line.
+          2. BFS over relations with visit-set + max_depth, same-tier only;
+             cross-tier edges added to orphan_ids.
+          3. best-effort delete leaves-first; per-memory exceptions
+             land in failed_ids. Audit-log line written either way.
+
+        Never raises out of cascade: any exception becomes a
+        report entry.
+        """
+        t0 = time.monotonic()
+
+        # --- normalize inputs ---
+        if strategy is None:
+            strategy = CascadeStrategy.BIDIRECTIONAL
+        if not isinstance(strategy, CascadeStrategy):
+            strategy = CascadeStrategy(strategy)
+        if max_depth is None:
+            max_depth = self._config.cascade_max_depth
+        if in_edge_mode is None:
+            in_edge_mode = self._config.cascade_in_edge_strategy
+
+        # --- locate target tier ---
+        target_tier = self._locate_tier(memory_id)
+
+        report = CascadeReport(
+            target_id=memory_id,
+            tier=target_tier,
+            strategy=strategy,
+            audit_log_path=self._audit.path,
+        )
+
+        if target_tier is None:
+            report.duration_ms = (time.monotonic() - t0) * 1000
+            self._audit.append(report.to_dict())
+            return report
+
+        target_store = self._stores[target_tier]
+
+        # --- Phase 1: BFS discover ---
+        visit_set: Set[str] = {memory_id}
+        queue: Deque[Tuple[str, int]] = deque([(memory_id, 0)])
+        discovered: List[str] = []
+
+        while queue:
+            cur_id, depth = queue.popleft()
+            # Stop expanding beyond the depth cap. With max_depth=N we walk
+            # N hops from root, processing levels 0..N inclusive (N+1 levels).
+            if depth > max_depth:
+                continue
+            try:
+                mem = target_store.retrieve(cur_id)
+            except Exception:
+                continue
+            if mem is None:
+                continue
+            discovered.append(cur_id)
+
+            if strategy in (CascadeStrategy.OUTGOING, CascadeStrategy.BIDIRECTIONAL):
+                for rel in mem.metadata.relations:
+                    tgt = rel.target_memory_id
+                    if tgt in visit_set:
+                        continue
+                    tgt_tier = self._locate_tier(tgt)
+                    if tgt_tier is None:
+                        continue
+                    if tgt_tier != target_tier:
+                        report.orphan_ids.append((tgt, cur_id))
+                        continue
+                    visit_set.add(tgt)
+                    queue.append((tgt, depth + 1))
+
+            if strategy == CascadeStrategy.BIDIRECTIONAL:
+                for src_id, src_tier in self._discover_in_edges(
+                    cur_id, target_tier, mode=in_edge_mode,
+                ):
+                    if src_id in visit_set:
+                        continue
+                    if src_tier != target_tier:
+                        report.orphan_ids.append((src_id, cur_id))
+                        continue
+                    visit_set.add(src_id)
+                    queue.append((src_id, depth + 1))
+
+        # --- Phase 2: best-effort delete (leaves first) ---
+        for cid in reversed(discovered):
+            try:
+                target_store.delete(cid)
+                report.deleted_ids.append(cid)
+            except Exception as exc:
+                report.failed_ids.append((cid, repr(exc)))
+
+        # --- Phase 3: audit ---
+        report.duration_ms = (time.monotonic() - t0) * 1000
+        self._audit.append(report.to_dict())
+        for orphan_id, parent_id in report.orphan_ids:
+            self._audit.append_orphan({
+                "ts":                    report.to_dict()["ts"],
+                "action":                "orphan_edge",
+                "orphan_id":             orphan_id,
+                "parent_id":             parent_id,
+                "triggered_by_target":   memory_id,
+                "triggered_by_strategy": strategy.value,
+            })
+        return report

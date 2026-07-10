@@ -308,5 +308,61 @@ class TestDiscoverInEdges(unittest.TestCase):
         self.assertIn("m1", ids)
 
 
+def _stores_with_one_rel_chain():
+    s = _InMemStore(MemoryType.SEMANTIC)
+    s.store(_make_mem("root", "root memory",
+                      relations=[{"type": "follows", "target_memory_id": "child"}]))
+    s.store(_make_mem("child", "child memory"))
+    return {MemoryType.SEMANTIC: s}
+
+
+class TestCascadeForgetterIsolated(unittest.TestCase):
+    def test_strategy_isolated_only_target(self):
+        from uams.pipeline.cascade import CascadeForgetter
+        stores = _stores_with_one_rel_chain()
+        f = CascadeForgetter(stores, UAMSConfig(), CascadeAuditWriter())
+        r = f.forget("root", strategy="isolated")
+        self.assertIn("root", r.deleted_ids)
+        self.assertNotIn("child", r.deleted_ids)
+        # child must still exist
+        self.assertIsNotNone(stores[MemoryType.SEMANTIC].retrieve("child"))
+
+
+def _chain():
+    # root -> a -> b -> c (linear); d is unrelated.
+    s = _InMemStore(MemoryType.SEMANTIC)
+    s.store(_make_mem("root", "r", relations=[{"type": "next", "target_memory_id": "a"}]))
+    s.store(_make_mem("a", "a", relations=[{"type": "next", "target_memory_id": "b"}]))
+    s.store(_make_mem("b", "b", relations=[{"type": "next", "target_memory_id": "c"}]))
+    s.store(_make_mem("c", "c"))
+    s.store(_make_mem("d", "d"))
+    return {MemoryType.SEMANTIC: s}
+
+
+class TestCascadeForgetterOutgoing(unittest.TestCase):
+    def test_outgoing_deletes_chain_not_unrelated(self):
+        from uams.pipeline.cascade import CascadeForgetter
+        stores = _chain()
+        f = CascadeForgetter(
+            stores, UAMSConfig(cascade_max_depth=10), CascadeAuditWriter(),
+        )
+        r = f.forget("root", strategy="outgoing")
+        for mid in ("root", "a", "b", "c"):
+            self.assertIn(mid, r.deleted_ids)
+        self.assertNotIn("d", r.deleted_ids)
+
+    def test_max_depth_caps_walk(self):
+        from uams.pipeline.cascade import CascadeForgetter
+        stores = _chain()
+        f = CascadeForgetter(
+            stores, UAMSConfig(cascade_max_depth=1), CascadeAuditWriter(),
+        )
+        r = f.forget("root", strategy="outgoing")
+        self.assertIn("root", r.deleted_ids)
+        self.assertIn("a", r.deleted_ids)
+        self.assertNotIn("b", r.deleted_ids)
+        self.assertNotIn("c", r.deleted_ids)
+
+
 if __name__ == "__main__":
     unittest.main()
