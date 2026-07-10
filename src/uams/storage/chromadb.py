@@ -41,7 +41,7 @@ class ChromaDBStore(MemoryStore):
             return
         try:
             embedding = memory.payload.embedding
-            self._collection.add(
+            self._collection.upsert(
                 ids=[str(memory.id)],
                 documents=[memory.payload.raw],
                 metadatas=[{
@@ -79,8 +79,10 @@ class ChromaDBStore(MemoryStore):
             
             meta = results["metadatas"][0]
             doc = results["documents"][0]
-            embedding = results.get("embeddings", [None])[0]
-            
+            emb = results.get("embeddings", [None])[0]
+            # chromadb 1.x returns numpy ndarray; callers expect List[float]
+            embedding = emb.tolist() if emb is not None and hasattr(emb, "tolist") else emb
+
             return Memory(
                 id=MemoryId(memory_id),
                 anchor=TemporalAnchor(
@@ -170,6 +172,13 @@ class ChromaDBStore(MemoryStore):
         self, vector: List[float], k: int = 10, **filters: Any
     ) -> List[Memory]:
         if not self._available or not vector:
+            return []
+        # Reject zero / all-zero vectors — cosine distance is undefined (0/0)
+        try:
+            norm_sq = sum(float(x) * float(x) for x in vector)
+            if norm_sq == 0.0:
+                return []
+        except (TypeError, ValueError):
             return []
         try:
             results = self._collection.query(
