@@ -82,7 +82,7 @@ jobs:
           pip install -e .
           pip install -e ".[all]" pytest
 
-      - name: PostgreSQL backend: wait + run
+      - name: "PostgreSQL backend: wait + run"
         if: matrix.backend == 'postgresql'
         env:
           UAMS_TEST_PG_HOST: 127.0.0.1
@@ -98,7 +98,7 @@ jobs:
           done
           pytest tests/test_postgresql_store.py -v --tb=short
 
-      - name: ChromaDB backend: run (in-process EphemeralClient)
+      - name: "ChromaDB backend: run (in-process EphemeralClient)"
         if: matrix.backend == 'chromadb'
         run: |
           pytest tests/test_chromadb_store.py -v --tb=short
