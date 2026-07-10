@@ -39,6 +39,8 @@ jobs:
         run: |
           pytest tests/ -v --tb=short \
             --ignore=tests/test_postgresql_store.py \
+            --ignore=tests/test_redis_store_real.py \
+            --ignore=tests/test_neo4j_store_real.py \
             --ignore=tests/test_chromadb_store.py
 
       - name: Build Docker image
@@ -51,7 +53,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        backend: [postgresql, chromadb]
+        backend: [postgresql, chromadb, redis, neo4j]
 
     services:
       postgres:
@@ -67,6 +69,30 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      neo4j:
+        image: neo4j:5-community
+        env:
+          NEO4J_ACCEPT_LICENSE_AGREEMENT: "yes"
+          NEO4J_AUTH: neo4j/testpass
+          NEO4J_PLUGINS: "[]"
+        ports:
+          - 7687:7687
+        options: >-
+          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 30
 
     steps:
       - uses: actions/checkout@v7
@@ -91,7 +117,6 @@ jobs:
           UAMS_TEST_PG_PASSWORD: postgres
           UAMS_TEST_PG_DB: postgres
         run: |
-          # wait for postgres to be reachable
           for i in 1 2 3 4 5 6 7 8 9 10; do
             if pg_isready -h 127.0.0.1 -p 5432 -U postgres; then break; fi
             sleep 2
@@ -102,6 +127,37 @@ jobs:
         if: matrix.backend == 'chromadb'
         run: |
           pytest tests/test_chromadb_store.py -v --tb=short
+
+      - name: "Redis backend: wait + run"
+        if: matrix.backend == 'redis'
+        env:
+          UAMS_TEST_REDIS_HOST: 127.0.0.1
+          UAMS_TEST_REDIS_PORT: 6379
+        run: |
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if redis-cli -h 127.0.0.1 -p 6379 ping | grep -q PONG; then break; fi
+            sleep 2
+          done
+          pytest tests/test_redis_store_real.py -v --tb=short
+
+      - name: "Neo4j backend: wait + run"
+        if: matrix.backend == 'neo4j'
+        env:
+          UAMS_TEST_NEO4J_URI: bolt://127.0.0.1:7687
+          UAMS_TEST_NEO4J_USER: neo4j
+          UAMS_TEST_NEO4J_PASSWORD: testpass
+        run: |
+          # Neo4j takes ~10-30s to boot; wait for bolt to accept connections
+          for i in $(seq 1 60); do
+            if (echo > /dev/tcp/127.0.0.1/7687) 2>/dev/null; then break; fi
+            sleep 2
+          done
+          # Wait for server to respond to RETURN 1 (Bolt up + auth OK)
+          for i in $(seq 1 30); do
+            python -c "from neo4j import GraphDatabase; d=GraphDatabase.driver('bolt://127.0.0.1:7687', auth=('neo4j','testpass')); s=d.session(); s.run('RETURN 1'); d.close()" 2>/dev/null && break
+            sleep 2
+          done
+          pytest tests/test_neo4j_store_real.py -v --tb=short
 
   integration:
     runs-on: ubuntu-latest
