@@ -364,5 +364,146 @@ class TestCascadeForgetterOutgoing(unittest.TestCase):
         self.assertNotIn("c", r.deleted_ids)
 
 
+class TestCycleProtection(unittest.TestCase):
+    def test_simple_cycle_terminates(self):
+        from uams.pipeline.cascade import CascadeForgetter
+        s = _InMemStore(MemoryType.SEMANTIC)
+        s.store(_make_mem("a", "a",
+                          relations=[{"type": "x", "target_memory_id": "b"}]))
+        s.store(_make_mem("b", "b",
+                          relations=[{"type": "x", "target_memory_id": "a"}]))
+        stores = {MemoryType.SEMANTIC: s}
+        f = CascadeForgetter(
+            stores, UAMSConfig(cascade_max_depth=20), CascadeAuditWriter(),
+        )
+        r = f.forget("a", strategy="bidirectional")
+        self.assertEqual(r.deleted_ids.count("a"), 1)
+        self.assertEqual(r.deleted_ids.count("b"), 1)
+
+    def test_longer_cycle_term(self):
+        from uams.pipeline.cascade import CascadeForgetter
+        s = _InMemStore(MemoryType.SEMANTIC)
+        s.store(_make_mem("a", "a",
+                          relations=[{"type": "x", "target_memory_id": "b"}]))
+        s.store(_make_mem("b", "b",
+                          relations=[{"type": "x", "target_memory_id": "c"}]))
+        s.store(_make_mem("c", "c",
+                          relations=[{"type": "x", "target_memory_id": "a"}]))
+        stores = {MemoryType.SEMANTIC: s}
+        f = CascadeForgetter(
+            stores, UAMSConfig(cascade_max_depth=20), CascadeAuditWriter(),
+        )
+        r = f.forget("a", strategy="outgoing")
+        for mid in ("a", "b", "c"):
+            self.assertEqual(r.deleted_ids.count(mid), 1)
+
+
+class TestCrossTierOrphan(unittest.TestCase):
+    def test_cross_tier_target_is_orphan_not_deleted(self):
+        from uams.pipeline.cascade import CascadeForgetter
+        sem = _InMemStore(MemoryType.SEMANTIC)
+        work = _InMemStore(MemoryType.WORKING)
+        sem.store(_make_mem("root", "r",
+                            relations=[{"type": "x", "target_memory_id": "cross"}]))
+        work.store(_make_mem("cross", "c"))
+        stores = {MemoryType.SEMANTIC: sem, MemoryType.WORKING: work}
+        f = CascadeForgetter(stores, UAMSConfig(), CascadeAuditWriter())
+        r = f.forget("root", strategy="outgoing")
+        self.assertIn("root", r.deleted_ids)
+        self.assertIn(("cross", "root"), r.orphan_ids)
+        self.assertNotIn("cross", r.deleted_ids)
+        self.assertIsNotNone(work.retrieve("cross"))
+
+    def test_cross_tier_in_edge_is_orphan(self):
+        from uams.pipeline.cascade import CascadeForgetter
+        sem = _InMemStore(MemoryType.SEMANTIC)
+        work = _InMemStore(MemoryType.WORKING)
+        sem.store(_make_mem("root", "r"))
+        work.store(_make_mem("wrk", "w",
+                             relations=[{"type": "x", "target_memory_id": "root"}]))
+        stores = {MemoryType.SEMANTIC: sem, MemoryType.WORKING: work}
+        f = CascadeForgetter(stores, UAMSConfig(), CascadeAuditWriter())
+        r = f.forget("root", strategy="bidirectional")
+        self.assertIn("root", r.deleted_ids)
+        self.assertIn(("wrk", "root"), r.orphan_ids)
+        self.assertNotIn("wrk", r.deleted_ids)
+        self.assertIsNotNone(work.retrieve("wrk"))
+
+
+class _PartialFailureStore(_InMemStore):
+    """delete() of "poison" raises RuntimeError."""
+    def delete(self, memory_id: str) -> bool:
+        if memory_id == "poison":
+            raise RuntimeError("simulated backend outage")
+        return super().delete(memory_id)
+
+
+class TestPartialFailure(unittest.TestCase):
+    def test_failed_memory_recorded_and_others_continue(self):
+        from uams.pipeline.cascade import CascadeForgetter
+        s = _PartialFailureStore(MemoryType.SEMANTIC)
+        # root -> poison; root -> ok
+        s.store(_make_mem("root", "r",
+                          relations=[
+                              {"type": "x", "target_memory_id": "poison"},
+                              {"type": "x", "target_memory_id": "ok"},
+                          ]))
+        s.store(_make_mem("poison", "p"))
+        s.store(_make_mem("ok", "o"))
+        stores = {MemoryType.SEMANTIC: s}
+        f = CascadeForgetter(
+            stores, UAMSConfig(cascade_max_depth=10), CascadeAuditWriter(),
+        )
+        r = f.forget("root", strategy="outgoing")
+        self.assertIn("root", r.deleted_ids)
+        self.assertIn("ok",   r.deleted_ids)
+        failed_ids = [mid for mid, _reason in r.failed_ids]
+        self.assertIn("poison", failed_ids)
+        self.assertFalse(r.is_complete)
+
+
+def _bidir_graph():
+    sem = _InMemStore(MemoryType.SEMANTIC)
+    sem.store(_make_mem("root", "r",
+                        relations=[{"type": "next", "target_memory_id": "child-a"}]))
+    sem.store(_make_mem("child-a", "a"))
+    sem.store(_make_mem("parent-b", "b",
+                        relations=[{"type": "refers-to", "target_memory_id": "root"}]))
+    sem.store(_make_mem("parent-c", "c",
+                        relations=[{"type": "refers-to", "target_memory_id": "root"}]))
+    sem.store(_make_mem("unrelated", "u"))
+    return {MemoryType.SEMANTIC: sem}
+
+
+class TestCascadeForgetterBidirectional(unittest.TestCase):
+    def test_bidirectional_sweeps_in_plus_out(self):
+        from uams.pipeline.cascade import CascadeForgetter
+        stores = _bidir_graph()
+        f = CascadeForgetter(
+            stores, UAMSConfig(cascade_max_depth=5), CascadeAuditWriter(),
+        )
+        r = f.forget("root", strategy="bidirectional")
+        for mid in ("root", "child-a", "parent-b", "parent-c"):
+            self.assertIn(mid, r.deleted_ids, f"{mid} should be cascade-deleted")
+        self.assertNotIn("unrelated", r.deleted_ids)
+
+    def test_bidirectional_cycle_no_double_delete(self):
+        from uams.pipeline.cascade import CascadeForgetter
+        sem = _InMemStore(MemoryType.SEMANTIC)
+        sem.store(_make_mem("a", "a",
+                            relations=[{"type": "x", "target_memory_id": "b"}]))
+        sem.store(_make_mem("b", "b",
+                            relations=[{"type": "x", "target_memory_id": "a"}]))
+        sem.store(_make_mem("c", "c",
+                            relations=[{"type": "x", "target_memory_id": "a"}]))
+        stores = {MemoryType.SEMANTIC: sem}
+        f = CascadeForgetter(
+            stores, UAMSConfig(cascade_max_depth=10), CascadeAuditWriter(),
+        )
+        r = f.forget("a", strategy="bidirectional")
+        for mid in ("a", "b", "c"):
+            self.assertEqual(r.deleted_ids.count(mid), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
