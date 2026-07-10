@@ -505,5 +505,22 @@ class TestCascadeForgetterBidirectional(unittest.TestCase):
             self.assertEqual(r.deleted_ids.count(mid), 1)
 
 
+class TestSystemForgetRewire(unittest.TestCase):
+    def test_system_forget_returns_cascade_report(self):
+        from uams.system import UniversalMemorySystem
+        cfg = UAMSConfig(
+            storage_backend="memory",
+            cascade_audit_log_path="C:/Windows/Temp/_uams_test_audit.jsonl",
+            cascade_orphan_log_path="C:/Windows/Temp/_uams_test_orphan.jsonl",
+        )
+        u = UniversalMemorySystem(config=cfg)
+        ctx = AgentContext(agent_id="a", agent_type="t", session_id="s")
+        mem_id = u.remember("hello world", ctx)
+        self.assertIsNotNone(mem_id)
+        r = u.forget(str(mem_id))
+        self.assertEqual(r.target_id, str(mem_id))
+        self.assertGreater(r.deleted_count, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

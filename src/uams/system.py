@@ -31,6 +31,12 @@ from uams.config import UAMSConfig
 from uams.utils.logging import get_logger, configure_logging
 from uams.utils.security import InputValidator
 from uams.utils.tokens import TokenEstimator, get_default_estimator
+from uams.utils.cascade_audit import CascadeAuditWriter
+from uams.pipeline.cascade import (
+    CascadeForgetter,
+    CascadeReport,
+    CascadeStrategy,
+)
 
 logger = get_logger(__name__)
 
@@ -85,6 +91,15 @@ class UniversalMemorySystem(EventHandler):
             query_rewriter=self._build_query_rewriter(),
         )
         self._forgetting = ForgettingEngine(self._stores)
+        self._cascade_audit = CascadeAuditWriter(
+            path=self._config.cascade_audit_log_path,
+            orphan_path=self._config.cascade_orphan_log_path,
+        )
+        self._cascade_forgetter = CascadeForgetter(
+            stores=self._stores,
+            config=self._config,
+            audit_writer=self._cascade_audit,
+        )
         self._coordinator: Optional[MultiAgentCoordinator] = None
 
         # Embedding callable: explicit kwarg wins; otherwise build from config.
@@ -570,26 +585,36 @@ class UniversalMemorySystem(EventHandler):
             logger.exception("recall() failed. Returning empty list.")
             return []
 
-    def forget(self, memory_id: str) -> bool:
+    def forget(
+        self,
+        memory_id: str,
+        *,
+        cascade: CascadeStrategy | str = CascadeStrategy.BIDIRECTIONAL,
+        max_depth: int | None = None,
+        in_edge_mode: str | None = None,
+    ) -> CascadeReport:
+        """Forget a memory with configurable cascade.
+
+        Strategy choices:
+          - 'isolated'      : delete only `memory_id` (legacy single-shot)
+          - 'outgoing'      : + delete out-edge targets (same tier)
+          - 'bidirectional' : + delete reverse references too
+                              (default; GDPR-aligned)
+
+        Cross-tier edges are recorded as orphans (never deleted).
+
+        Returns a `CascadeReport` describing what was deleted,
+        what was marked orphan, and any partial failures. Never
+        raises out of cascade.
         """
-        Delete a specific memory by ID.
-        Returns True if found and deleted.
-        """
-        try:
-            for tier, store in self._stores.items():
-                mem = store.retrieve(memory_id)
-                if mem:
-                    store.delete(memory_id)
-                    logger.info(
-                        "Forgot memory %s from tier %s (agent=%s, user=%s)",
-                        memory_id, tier.name, mem.context.agent_id, mem.context.user_id
-                    )
-                    return True
-            logger.warning("forget() called for non-existent memory_id=%s", memory_id)
-            return False
-        except Exception:
-            logger.exception("forget() failed for memory_id=%s", memory_id)
-            return False
+        # Accept both enums and plain strings.
+        strategy = cascade if isinstance(cascade, CascadeStrategy) else CascadeStrategy(cascade)
+        return self._cascade_forgetter.forget(
+            memory_id,
+            strategy=strategy,
+            max_depth=max_depth,
+            in_edge_mode=in_edge_mode,
+        )
 
     def consolidate(self, session_id: Optional[str] = None) -> None:
         """
