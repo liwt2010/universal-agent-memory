@@ -37,6 +37,7 @@ from uams.pipeline.cascade import (
     CascadeReport,
     CascadeStrategy,
 )
+from typing import Optional, Union
 
 logger = get_logger(__name__)
 
@@ -589,9 +590,9 @@ class UniversalMemorySystem(EventHandler):
         self,
         memory_id: str,
         *,
-        cascade: CascadeStrategy | str = CascadeStrategy.BIDIRECTIONAL,
-        max_depth: int | None = None,
-        in_edge_mode: str | None = None,
+        cascade: Union[CascadeStrategy, str] = CascadeStrategy.BIDIRECTIONAL,
+        max_depth: Optional[int] = None,
+        in_edge_mode: Optional[str] = None,
     ) -> CascadeReport:
         """Forget a memory with configurable cascade.
 

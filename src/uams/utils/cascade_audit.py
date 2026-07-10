@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Union
 
 
 class CascadeAuditWriter:
@@ -21,8 +21,8 @@ class CascadeAuditWriter:
 
     def __init__(
         self,
-        path: Path | str = "logs/cascade_forget_audit.jsonl",
-        orphan_path: Path | str = "logs/cascade_orphan_log.jsonl",
+        path: Union[Path, str] = "logs/cascade_forget_audit.jsonl",
+        orphan_path: Union[Path, str] = "logs/cascade_orphan_log.jsonl",
     ) -> None:
         self._path = Path(path)
         self._orphan_path = Path(orphan_path)
