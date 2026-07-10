@@ -9,6 +9,7 @@
 - [Hybrid Retrieval](#hybrid-retrieval)
 - [Privacy & Deduplication](#privacy--deduplication)
 - [Forgetting Engine](#forgetting-engine)
+- [Cascade Forget (v0.2)](./CASCADE_FORGET.md)
 - [Multi-Agent Coordination](#multi-agent-coordination)
 - [Thread Safety](#thread-safety)
 - [Error Handling](#error-handling)
@@ -294,6 +295,18 @@ def should_evict(memory, retention_floor=0.01):
 - `delete_expired()` is called periodically by a background thread
 - Each store manages its own TTL or half-life
 - Eviction is lazy (checked on retrieval) and proactive (background scan)
+
+---
+
+## Cascade Forget (v0.2)
+
+The user-facing `UniversalMemorySystem.forget(memory_id)` API can
+cascade. See [CASCADE_FORGET.md](./CASCADE_FORGET.md) for the
+strategy enum, default bidirectional (GDPR) behavior, audit-log
+shape, and a worked GDPR-aligned workflow example.
+
+The cascade engine lives in `src/uams/pipeline/cascade.py`; the
+append-only audit writer in `src/uams/utils/cascade_audit.py`.
 
 ---
 

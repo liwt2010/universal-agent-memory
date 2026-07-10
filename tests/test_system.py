@@ -248,7 +248,10 @@ class TestUniversalMemorySystem(unittest.TestCase):
     def test_forget(self):
         ctx = AgentContext(agent_id="a1", agent_type="test", session_id="s1")
         mid = self.ums.remember("Forget me", ctx)
-        self.assertTrue(self.ums.forget(str(mid)))
+        # CascadeReport replaces the old bool return; check deleted_count
+        # > 0 to verify the memory went away.
+        report = self.ums.forget(str(mid))
+        self.assertGreater(report.deleted_count, 0)
 
         results = self.ums.recall("Forget me", context=ctx, budget_tokens=1000)
         self.assertEqual(len(results), 0)

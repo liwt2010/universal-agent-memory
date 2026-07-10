@@ -15,7 +15,7 @@ Production-Safety:
 """
 
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Literal, Optional, Tuple
 import os
 
 
@@ -182,6 +182,12 @@ class UAMSConfig:
 
     # --- Health Check ---
     health_check_port: int = 3111
+
+    # --- Cascade delete (cross-layer forget v0.2) ---
+    cascade_in_edge_strategy: Literal["scan", "index", "auto"] = "auto"
+    cascade_max_depth: int = 4
+    cascade_audit_log_path: str = "logs/cascade_forget_audit.jsonl"
+    cascade_orphan_log_path: str = "logs/cascade_orphan_log.jsonl"
 
     # ------------------------------------------------------------------
     # Environment variable parsing helpers
