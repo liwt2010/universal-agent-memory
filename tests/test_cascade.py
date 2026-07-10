@@ -158,5 +158,60 @@ class TestCascadeForgetterIsolated(unittest.TestCase):
         self.skipTest("Task 5 will implement.")
 
 
+class TestAuditLogAppend(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="uams-cascade-test-")
+        self.path = Path(self._tmpdir) / "audit.jsonl"
+        self.writer = CascadeAuditWriter(self.path,
+                                         orphan_path=self.path.parent / "orphan.jsonl")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_lazy_dir_creation(self):
+        nested = Path(self._tmpdir) / "deep" / "nested" / "audit.jsonl"
+        w = CascadeAuditWriter(nested)
+        w.append({"k": "v"})
+        self.assertTrue(nested.exists())
+
+    def test_one_jsonl_line_per_call(self):
+        for i in range(3):
+            self.writer.append({"i": i, "action": "cascade_forget"})
+        lines = self.path.read_text(encoding="utf-8").strip().splitlines()
+        self.assertEqual(len(lines), 3)
+        for i, ln in enumerate(lines):
+            self.assertEqual(json.loads(ln)["i"], i)
+
+    def test_orphan_log_dual_writer(self):
+        self.writer.append_orphan({"orphan_id": "x", "parent_id": "p"})
+        orphan_path = self.path.parent / "orphan.jsonl"
+        self.assertTrue(orphan_path.exists())
+        line = orphan_path.read_text(encoding="utf-8").strip()
+        self.assertEqual(json.loads(line)["orphan_id"], "x")
+
+
+class TestAuditConcurrency(unittest.TestCase):
+    def test_no_interleaved_lines_under_concurrent_writes(self):
+        tmpdir = tempfile.mkdtemp(prefix="uams-cascade-conc-")
+        path = Path(tmpdir) / "audit.jsonl"
+        w = CascadeAuditWriter(path)
+        n_threads = 8
+        per_thread = 50
+
+        def worker(tid):
+            for j in range(per_thread):
+                w.append({"t": tid, "j": j})
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(n_threads)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+
+        lines = path.read_text(encoding="utf-8").strip().splitlines()
+        self.assertEqual(len(lines), n_threads * per_thread)
+        for ln in lines:
+            json.loads(ln)
+
+
 if __name__ == "__main__":
     unittest.main()
