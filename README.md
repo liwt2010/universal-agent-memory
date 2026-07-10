@@ -2,10 +2,11 @@
   <img src="https://img.shields.io/badge/version-0.1.0-blue.svg" alt="Version 0.1.0">
   <img src="https://img.shields.io/badge/python-3.9%2B-blue.svg" alt="Python 3.9+">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT">
-  <img src="https://img.shields.io/badge/tests-248%20passing-brightgreen.svg" alt="248 Tests Passing">
+  <img src="https://img.shields.io/badge/tests-346%20passing-brightgreen.svg" alt="346 Tests Passing">
   <img src="https://img.shields.io/badge/token%20compression-72%25%20savings-success.svg" alt="Token Compression 72% Savings">
   <img src="https://img.shields.io/badge/embeddings-pluggable-blueviolet.svg" alt="Pluggable Embeddings">
   <img src="https://img.shields.io/badge/backends-6%20storage%20engines-blueviolet.svg" alt="6 Storage Backends">
+  <img src="https://img.shields.io/badge/cascade-GDPR%2Daligned-success.svg" alt="Cascade Forget (GDPR)">
   <img src="https://img.shields.io/badge/status-B%2B%20%2F%20A--%20Prototype-yellow.svg" alt="B+/A- Quality Prototype">
 </p>
 
@@ -42,11 +43,65 @@ It silently captures what your agent does, compresses it into a searchable memor
 | **Hybrid Retrieval** | BM25 keyword + dense vector + knowledge graph traversal, fused with RRF |
 | **Privacy & Deduplication** | Automatic secret stripping and SHA-256 rolling deduplication |
 | **Ebbinghaus Decay** | Configurable forgetting curves per memory tier |
+| **Cascade Forget (GDPR)** | Configurable cascade-delete through relations & reverse references with JSONL audit trail ([docs/CASCADE_FORGET.md](docs/CASCADE_FORGET.md)) |
 | **Multi-Agent Coordination** | Resource leases, signal passing, and shared memory spaces |
 | **Token Budget Injection** | Automatically compresses retrieved context to fit LLM windows |
 | **Pluggable Storage** | In-memory, SQLite, PostgreSQL, Redis, Neo4j, ChromaDB |
 | **Framework Agnostic** | Works with Claude, GPT, LangChain, AutoGen, or custom agents |
 | **Production-Safe Foundation** | Thread-safe, error handling, graceful degradation, connection pooling, rate limiting *(rated B+/A- — see PRODUCTION_ASSESSMENT.md)* |
+
+---
+
+## 🧹 Cascade Forget (GDPR-aligned)
+
+Forgetting one memory is rarely the end of the story. Once a `memory_id` is deleted, downstream `search_graph()` walks fall through invisible holes, and any cached or derived record that referenced it becomes a dangling pointer. In regulated workloads (GDPR Art. 17, HIPAA), failing to cascade is a compliance incident.
+
+`uams.forget(memory_id)` ships a configurable cascade:
+
+```python
+from uams import UniversalMemorySystem
+from uams.pipeline.cascade import CascadeStrategy
+
+u = UniversalMemorySystem(storage_backend="sqlite")
+
+# Three strategies, all with best-effort delete + JSONL audit trail
+u.forget("mem-1", cascade=CascadeStrategy.ISOLATED)        # single-shot (legacy)
+u.forget("mem-1", cascade=CascadeStrategy.OUTGOING)         # + out-edge targets (same tier)
+u.forget("mem-1")                                            # default: bidirectional (GDPR-aligned)
+
+# Returns CascadeReport
+report = u.forget("mem-1")
+print(report.deleted_ids, report.orphan_ids, report.failed_ids)
+print(report.is_complete, report.audit_log_path)
+```
+
+**Guarantees**:
+- **Visit-set + max-depth cap** prevent infinite loops on cyclic relations.
+- **Strict same-tier scope** — cross-tier edges are recorded as orphans but **never** cause a cross-tier deletion.
+- **Hybrid in-edge discovery** — `auto` mode uses per-store reverse index when available, falls back to `O(N)` scan otherwise.
+- **Best-effort delete** — partial failures live in `report.failed_ids`; other memories still get deleted. Audit log written either way.
+
+**Audit trail**:
+
+```
+logs/cascade_forget_audit.jsonl   # one JSONL line per invocation
+logs/cascade_orphan_log.jsonl     # one line per cross-tier edge encountered
+```
+
+Build a "data deletion receipt" for compliance from a single call:
+
+```python
+report = u.forget(target_id)
+receipt = {
+    "ts": report.to_dict()["ts"],
+    "target": report.target_id,
+    "deleted": report.deleted_ids,
+    "failed": report.failed_ids,
+    "audit_log": str(report.audit_log_path),
+}
+```
+
+See [docs/CASCADE_FORGET.md](docs/CASCADE_FORGET.md) for the full guide, config knobs, and worked GDPR-aligned workflow.
 
 ---
 
@@ -184,7 +239,7 @@ UAMS exposes **7 universal primitives** that replace the 53+ coding-specific too
 | **`observe(event)`** | Record any `AgentEvent` into Working memory | Primary ingestion |
 | **`remember(fact, ...)`** | Explicitly save a fact to Semantic memory | Direct fact storage |
 | **`recall(query, ...)`** | Retrieve relevant memories across all tiers | Pre-turn context loading |
-| **`forget(memory_id)`** | Delete a specific memory by ID | GDPR / user request |
+| **`forget(memory_id, cascade=...)`** | Delete a memory; cascade through out-edges and/or reverse references with audit-trail receipt. Returns a `CascadeReport` | GDPR right-to-be-forgotten / user request / cleanup |
 | **`consolidate(session_id)`** | Trigger 4-tier compression | Auto on session end |
 | **`inject_context(...)`** | Format memories as a prompt text block | Direct LLM injection |
 | **`sync(target)`** | Bidirectional sync with external files | External persistence |
@@ -341,7 +396,7 @@ pytest tests/ -v
 pytest tests/ --cov=src/uams --cov-report=html
 ```
 
-**Test Results:** 248 tests, 0 failures, 1 skipped (ChromaDB not installed)
+**Test Results:** 346 tests, 0 failures, 21 skipped locally (PG/Redis/Neo4j service-gated; CI runs all 6 real backends green)
 
 | Test Category | Count | Coverage |
 |--------------|-------|----------|
@@ -358,7 +413,9 @@ pytest tests/ --cov=src/uams --cov-report=html
 | Token compression suite (L1+L2) | 22 | Structural filter + keyword hint + LLM integration |
 | Utilities & A+ features | 31 | Retry, security, rate-limit, backup, migration, benchmark |
 | Mock storage (Redis / Neo4j) | 16 | Storage/retrieve/search/graph/PubSub/expiry |
-| **Total** | **248** | **All passing (1 skipped, ChromaDB)** |
+| **Real backend e2e (CI)** | **+50** | **6/6 storage engines verified in CI: PG / ChromaDB / Redis / Neo4j / SQLite / InMemory** |
+| **Cascade forget** | **+29** | **Strategy enum + audit writer + BFS + cycle/cross-tier/partial + system rewire** |
+| **Total** | **346** | **All passing locally (21 skipped, server-gated); CI 9/9 green for 6/6 backends** |
 
 ---
 
@@ -387,7 +444,7 @@ universal-agent-memory/
 │   ├── pull_request_template.md
 │   └── dependabot.yml
 ├── src/uams/                   # Core package
-│   ├── system.py               # Main facade
+│   ├── system.py               # Main facade (forget() with cascade dispatcher)
 │   ├── async_system.py         # Async API
 │   ├── config.py               # Configuration + production safety
 │   ├── benchmarks.py           # Performance benchmarks
@@ -395,12 +452,14 @@ universal-agent-memory/
 │   ├── core/                   # Enums & data models
 │   ├── bus/                    # Event bus
 │   ├── storage/                # 6 storage backends
-│   ├── pipeline/               # Compression, retrieval, privacy, forgetting, LLM compression
+│   ├── pipeline/               # Compression, retrieval, privacy, forgetting, LLM compression, **cascade**
+│   │   └── cascade.py          # **CascadeForgetter (BFS + visit-set + max_depth + best-effort)**
 │   ├── multi_agent/            # Coordination
 │   ├── embedding/              # Embedding interface + 4 providers
 │   ├── llm/                    # OpenAI-compatible LLM clients + cache
 │   ├── adapters/               # Framework adapters
-│   └── utils/                  # Logging, retry, security, tokens, backup
+│   └── utils/                  # Logging, retry, security, tokens, backup, **cascade_audit**
+│       └── cascade_audit.py    # **Append-only JSONL audit writer (GDPR trail)**
 ├── examples/                   # 5 domain examples + token compression demo
 │   ├── personal_assistant.py
 │   ├── game_npc.py
@@ -408,21 +467,28 @@ universal-agent-memory/
 │   ├── research_agent.py
 │   ├── multi_agent.py
 │   └── _token_compression_demo.py
-├── tests/                      # 248 test cases
+├── tests/                      # 346 test cases
 │   ├── test_system.py
 │   ├── test_chaos.py
 │   ├── test_aplus.py
-│   ├── test_redis_store.py
-│   ├── test_neo4j_store.py
+│   ├── test_redis_store.py          # mock
+│   ├── test_neo4j_store.py          # mock
+│   ├── test_redis_store_real.py     # CI: real redis service container
+│   ├── test_neo4j_store_real.py     # CI: real neo4j service container
+│   ├── test_postgresql_store.py     # CI: real PG service container
+│   ├── test_chromadb_store.py       # CI: real ChromaDB EphemeralClient
+│   ├── test_cascade.py              # CascadeForgetter + CascadeAuditWriter
 │   ├── test_config_validation.py
 │   ├── test_llm_compression.py
 │   └── test_embedding.py
 └── docs/                       # Documentation
     ├── API.md                  # Full API reference
     ├── ARCHITECTURE.md         # Architecture deep dive
+    ├── CASCADE_FORGET.md       # Cascade forget user guide
     ├── DEPLOYMENT.md           # Deployment guide
     ├── DEPLOYMENT.zh-CN.md     # 部署指南
-    └── PR1-2-LLM-Compression.md # LLM compression handoff doc
+    ├── PR1-2-LLM-Compression.md # LLM compression handoff doc
+    └── superpowers/            # Specs + plans (cross-layer forget cascade)
 ```
 
 ---

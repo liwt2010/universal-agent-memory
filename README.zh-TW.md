@@ -51,10 +51,64 @@ UAMS 將記憶基礎設施從智能體框架和應用領域中解耦出來。它
 | **混合檢索** | BM25 關鍵字 + 稠密向量 + 知識圖譜遍歷，以 RRF（倒數排序融合）整合 |
 | **隱私與去重** | 自動脫敏敏感資訊，SHA-256 滾動視窗去重 |
 | **艾賓浩斯遺忘** | 每個記憶層級可設定獨立的遺忘曲線 |
+| **級聯刪除（GDPR 友善）** | 可沿關係邊與反向引用按需求級聯刪除,並附 JSONL 稽核軌跡([docs/CASCADE_FORGET.md](docs/CASCADE_FORGET.md)) |
 | **多智能體協調** | 資源租約（Lease）、訊號傳遞（Signal）、共享記憶空間 |
 | **Token 預算注入** | 自動將檢索結果壓縮到 LLM 上下文視窗限制內 |
 | **可插拔儲存** | 記憶體儲存（預設）、ChromaDB、SQLite、PostgreSQL+pgvector、Neo4j |
 | **框架無關** | 相容 Claude、GPT、LangChain、AutoGen 或自研智能體 |
+
+---
+
+## 🧹 級聯刪除（GDPR 友善）
+
+遺忘一條記憶往往不是故事的結尾。一旦某筆 `memory_id` 被刪除,下游的 `search_graph()` 就會留下看不見的漏洞,任何引用過它的快取或衍生紀錄都會變成懸空指標。在合規場景下(GDPR 第 17 條、HIPAA)無法級聯刪除即為合規事件。
+
+`uams.forget(memory_id)` 內建一套可設定的級聯機制:
+
+```python
+from uams import UniversalMemorySystem
+from uams.pipeline.cascade import CascadeStrategy
+
+u = UniversalMemorySystem(storage_backend="sqlite")
+
+# 三種策略,皆有 best-effort 刪除 + JSONL 稽核
+u.forget("mem-1", cascade=CascadeStrategy.ISOLATED)        # 單筆(舊版行為)
+u.forget("mem-1", cascade=CascadeStrategy.OUTGOING)         # + 同層正向目標
+u.forget("mem-1")                                            # 預設:雙向級聯(GDPR)
+
+# 回傳 CascadeReport
+report = u.forget("mem-1")
+print(report.deleted_ids, report.orphan_ids, report.failed_ids)
+print(report.is_complete, report.audit_log_path)
+```
+
+**保證**:
+- **visit-set + 最大深度上限** 防止環狀關係導致的無限遞迴
+- **同層嚴格作用域** —— 跨層關係記為「孤立」但**絕不**觸發跨層刪除
+- **混合反向邊探索** —— `auto` 模式優先用 store 的反向索引,否則退回為 `O(N)` 掃描
+- **best-effort 刪除** —— 部分失敗寫入 `report.failed_ids`,其餘記憶仍會被刪除;無論成敗皆寫稽核日誌
+
+**稽核軌跡**:
+
+```
+logs/cascade_forget_audit.jsonl   # 每次呼叫一行 JSONL
+logs/cascade_orphan_log.jsonl     # 每個跨層孤立邊一行
+```
+
+用一次呼叫即可產生資料刪除憑證:
+
+```python
+report = u.forget(target_id)
+receipt = {
+    "ts": report.to_dict()["ts"],
+    "target": report.target_id,
+    "deleted": report.deleted_ids,
+    "failed": report.failed_ids,
+    "audit_log": str(report.audit_log_path),
+}
+```
+
+詳見 [docs/CASCADE_FORGET.md](docs/CASCADE_FORGET.md)。
 
 ---
 
@@ -127,7 +181,7 @@ UAMS 暴露 **7 個通用原語**，替代了 agentmemory 的 53 個編碼專用
 | **`observe(event)`** | 將任意 `AgentEvent` 記錄到工作記憶 | 主要擷取入口 —— 接入智能體生命週期 |
 | **`remember(fact, ...)`** | 顯式將事實儲存到語意記憶 | 使用者直接陳述偏好或事實 |
 | **`recall(query, ...)`** | 跨所有層級檢索相關記憶 | 每次智能體行動前呼叫，載入上下文 |
-| **`forget(memory_id)`** | 按 ID 刪除特定記憶 | 使用者要求刪除 / GDPR 合規 |
+| **`forget(memory_id, cascade=...)`** | 刪除記憶,並按需求沿正向與反向引用級聯,同時寫入稽核軌跡。回傳 `CascadeReport` | GDPR「被遺忘權」/ 使用者請求 / 清理 |
 | **`consolidate(session_id)`** | 觸發四層壓縮整合 | 會話結束自動觸發，或手動呼叫 |
 | **`inject_context(...)`** | 將記憶格式化為提示詞文字區塊 | 直接注入到 LLM 系統提示詞 |
 | **`sync(target)`** | 與外部檔案雙向同步 | `MEMORY.md`、遊戲存檔檔案等 |
@@ -308,36 +362,50 @@ universal-agent-memory/
 ├── README.md               # 本文件（英文）
 ├── README.zh-CN.md         # 簡體中文版本
 ├── README.zh-TW.md         # 繁體中文版本（本文件）
-├── src/uams/               # 核心套件（約 2300 行）
-│   ├── __init__.py         # 統一匯出介面
-│   ├── system.py           # UniversalMemorySystem 主入口
-│   ├── core/               # 列舉、資料模型、原語
-│   │   ├── enums.py
-│   │   └── models.py
-│   ├── bus/                # 事件匯流排（零框架耦合）
-│   │   └── event_bus.py
-│   ├── storage/            # 可插拔記憶儲存
-│   │   ├── base.py         # MemoryStore 抽象介面
-│   │   └── memory.py       # InMemoryStore 參考實作
-│   ├── pipeline/           # 壓縮、檢索、隱私、遺忘
-│   │   ├── compression.py  # 四層壓縮引擎
-│   │   ├── forgetting.py   # 艾賓浩斯遺忘曲線
-│   │   ├── privacy.py      # 敏感資訊脫敏 + 去重
-│   │   └── retrieval.py    # 混合搜尋（BM25 + 向量 + 圖譜 + RRF）
-│   ├── multi_agent/        # 租約、訊號、共享空間
-│   │   └── coordinator.py
-│   ├── embedding/          # 嵌入模型提供商介面
-│   │   └── base.py
-│   └── adapters/           # 智能體框架適配器
-│       └── base.py
-├── examples/               # 5 個領域無關的範例
+├── src/uams/               # 核心套件（約 12200 行）
+│   ├── system.py           # 主入口（forget() 級聯分派）
+│   ├── async_system.py     # 異步 API
+│   ├── config.py           # 配置 + 生產安全校驗
+│   ├── benchmarks.py       # 效能基準
+│   ├── health.py           # 健康檢查與指標
+│   ├── core/               # 列舉、資料模型
+│   ├── bus/                # 事件匯流排
+│   ├── storage/            # 6 個儲存後端（InMemory/SQLite/PG/Redis/Neo4j/ChromaDB）
+│   ├── pipeline/           # 壓縮、檢索、隱私、遺忘、LLM 壓縮、**級聯**
+│   │   └── cascade.py      # **CascadeForgetter (BFS + visit-set + max_depth + best-effort)**
+│   ├── multi_agent/        # 協調
+│   ├── embedding/          # 嵌入介面 + 4 個 provider
+│   ├── llm/                # OpenAI 相容 LLM 客戶端 + 快取
+│   ├── adapters/           # 框架適配器
+│   └── utils/              # 日誌、重試、安全、token、備份、**級聯稽核**
+│       └── cascade_audit.py  # **追加式 JSONL 稽核寫入器（GDPR 軌跡）**
+├── examples/               # 5 個領域範例 + token 壓縮示範
 │   ├── personal_assistant.py
 │   ├── game_npc.py
 │   ├── customer_service.py
 │   ├── research_agent.py
-│   └── multi_agent.py
-└── tests/
-    └── test_system.py      # 單元測試
+│   ├── multi_agent.py
+│   └── _token_compression_demo.py
+├── tests/                  # 346 個測試
+│   ├── test_system.py
+│   ├── test_chaos.py
+│   ├── test_aplus.py
+│   ├── test_postgresql_store.py    # CI：真實 PG service container
+│   ├── test_chromadb_store.py      # CI：真實 ChromaDB EphemeralClient
+│   ├── test_redis_store_real.py    # CI：真實 redis service
+│   ├── test_neo4j_store_real.py    # CI：真實 neo4j service
+│   ├── test_cascade.py             # 級聯刪除測試
+│   ├── test_config_validation.py
+│   ├── test_llm_compression.py
+│   └── test_embedding.py
+└── docs/                   # 文件
+    ├── API.md              # API 參考
+    ├── ARCHITECTURE.md     # 架構深讀
+    ├── CASCADE_FORGET.md   # 級聯刪除使用者指南
+    ├── DEPLOYMENT.md       # 部署指南
+    ├── DEPLOYMENT.zh-CN.md # 部署指南（簡中）
+    ├── PR1-2-LLM-Compression.md # LLM 壓縮交接文件
+    └── superpowers/        # 規格 + 計畫（跨層級聯刪除）
 ```
 
 ---
@@ -387,6 +455,10 @@ python tests/test_system.py
 | 多智能體鎖 | 獨占租約取得與阻擋 |
 | 層級統計 | 工作/情境/語意/程序層計數正確 |
 | 上下文注入 | 產生可直接用於提示詞的文字區塊 |
+| **6 後端真實驗證(CI 9/9 green)** | **PG / ChromaDB / Redis / Neo4j / SQLite / InMemory 全部以真實 service container 跑通** |
+| **級聯刪除** | **三策略 + visit-set + 最大深度上限 + 跨層隔離 + 最佳努力刪除 + JSONL 稽核** |
+
+**測試規模**:346 個測試(本地 21 skip:無 PG/Redis/Neo4j service 時跳過真實後端;CI 全跑通)。
 
 ---
 

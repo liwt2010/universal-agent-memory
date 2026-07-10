@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Cross-layer cascade forget (GDPR Article 17 aligned)**
+  - `CascadeStrategy` enum: `'isolated'` / `'outgoing'` / `'bidirectional'` (default bidirectional)
+  - `CascadeReport` dataclass: `target_id`, `tier`, `strategy`, `deleted_ids`, `orphan_ids`, `failed_ids`, `duration_ms`, `audit_log_path`, plus `deleted_count` / `orphan_count` / `failed_count` / `is_complete` properties and `to_dict()` for the audit log
+  - `CascadeForgetter` (`src/uams/pipeline/cascade.py`): BFS over relations with `visit_set` (cycle guard), `max_depth` cap (default 4), strict same-tier scope (cross-tier edges recorded as orphans but never deleted)
+  - In-edge discovery: hybrid `scan` / `index` / `auto` modes via `UAMSConfig.cascade_in_edge_strategy` (currently all 6 backends fall back to `scan`; future `reverse_index()` adapter hook in place for O(1) lookups)
+  - Best-effort delete leaves-first; partial failures recorded in `report.failed_ids`; cascade never raises out
+  - **`CascadeAuditWriter`** (`src/uams/utils/cascade_audit.py`): append-only JSONL writer, RLock-protected for cross-thread safety, one file per invocation + one per cross-tier orphan edge encountered
+  - `UniversalMemorySystem.forget()` rewire: now accepts `cascade=` keyword + dispatches through `CascadeForgetter`. Default `cascade='bidirectional'` (GDPR-aligned); legacy single-shot via `cascade=CascadeStrategy.ISOLATED`. Returns `CascadeReport`
+  - 4 new `UAMSConfig` fields: `cascade_in_edge_strategy` (default `"auto"`), `cascade_max_depth` (default `4`), `cascade_audit_log_path`, `cascade_orphan_log_path`
+  - **`docs/CASCADE_FORGET.md`** user guide (TL;DR, configuration, `CascadeReport` reader, GDPR-aligned workflow, failure semantics, migration notes)
+  - **29 new tests** in `tests/test_cascade.py` covering: enum round-trip, dataclass shape, audit-log append, audit concurrency, config fields, locate-tier, discover-in-edges (3 modes), isolated / outgoing / cycle protection / cross-tier orphan / partial failure / bidirectional strategies, system-rewire integration
+  - Local: 317 → **346 tests pass** (+29 cascade), 21 still skipped (server-gated), 0 regressions
+  - CI: **9/9 jobs green** (test matrix 4× Python 3.9/3.10/3.11/3.12, integration, **6/6 storage backends real service containers**: PostgreSQL / ChromaDB / Redis / Neo4j + SQLite / InMemory)
+  - Spec: `docs/superpowers/specs/2026-07-10-cross-layer-forget-cascade-design.md`. Plan: `docs/superpowers/plans/2026-07-10-cross-layer-forget-cascade.md`
 - **LLM-backed compression engine** (`LLMCompressionEngine`) inheriting `CompressionEngine`
   - Episodic summarization with two-level batching for long sessions
   - Semantic extraction via JSON-array output (tolerant of `\`\`\`json` fences)
