@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, List, Optional
 import hashlib
 import logging
 import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,12 @@ class CachedLLMClient(LLMClient):
     is bypassed entirely and every read/write goes through the external
     backend — which is expected to be shared across workers.
 
+    Optional ``ttl_seconds``: if set, cached entries carry an expiry
+    timestamp and stale entries are treated as cache misses on read.
+    Without TTL the behavior is the original "cache forever" — enabled
+    only by explicit opt-in so existing deployments keep working.
+    ``ttl_seconds <= 0`` is treated as ``None`` (defensive).
+
     Thread-safe via RLock when using the in-process backend.
     """
 
@@ -106,9 +113,13 @@ class CachedLLMClient(LLMClient):
         max_entries: int = 1000,
         cache_get: Optional[Callable[[str], Optional[str]]] = None,
         cache_put: Optional[Callable[[str, str], None]] = None,
+        ttl_seconds: Optional[float] = None,
+        clock: Callable[[], float] = time.monotonic,
     ):
         self._inner = inner
         self._external = cache_get is not None and cache_put is not None
+        self._ttl = float(ttl_seconds) if (ttl_seconds and ttl_seconds > 0) else None
+        self._clock = clock
         if self._external:
             self._cache_get = cache_get
             self._cache_put = cache_put
@@ -117,27 +128,56 @@ class CachedLLMClient(LLMClient):
             self._cache: Dict[str, str] = {}
             self._lock = threading.RLock()
 
+    def _encode(self, value: str, now: float) -> str:
+        # Without TTL we store the value verbatim — backward-compatible
+        # with anything already in an external backend.
+        if self._ttl is None:
+            return value
+        return f"{value}|{now + self._ttl:.6f}"
+
+    def _decode(self, raw: Optional[str], now: float) -> Optional[str]:
+        if raw is None:
+            return None
+        if self._ttl is None:
+            return raw
+        sep = raw.rfind("|")
+        if sep < 0:
+            # No envelope and TTL is on — treat as stale rather than trust
+            # an unknown format. Returning None signals cache miss.
+            return None
+        body, exp_str = raw[:sep], raw[sep + 1 :]
+        try:
+            exp = float(exp_str)
+        except ValueError:
+            return None
+        if now >= exp:
+            return None
+        return body
+
     def chat(self, messages, **kwargs):
         key_payload = repr(messages) + "|" + repr(sorted(kwargs.items()))
         key = hashlib.sha256(key_payload.encode("utf-8")).hexdigest()
+        now = self._clock()
         # Cache lookup
         if self._external:
-            cached = self._cache_get(key)
+            cached = self._decode(self._cache_get(key), now)
         else:
             with self._lock:
-                cached = self._cache.get(key)
+                raw = self._cache.get(key)
+            cached = self._decode(raw, now)
         if cached is not None:
             return cached
         result = self._inner.chat(messages, **kwargs)
         # Cache write
+        encoded = self._encode(result, now)
         if self._external:
-            self._cache_put(key, result)
+            self._cache_put(key, encoded)
         else:
             with self._lock:
                 if len(self._cache) >= self._max:
                     # Drop oldest (insertion-ordered dict semantics in py3.7+)
                     self._cache.pop(next(iter(self._cache)))
-                self._cache[key] = result
+                self._cache[key] = encoded
         return result
 
     def is_available(self) -> bool:

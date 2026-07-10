@@ -1,91 +1,74 @@
 """Embedding provider implementations.
 
-Existing abstract base classes live in ``uams.embedding.base``. This module
-adds concrete providers and a cache wrapper:
+UAMS ships with three concrete providers:
 
-- ``NoOpEmbeddingProvider``   -- already in base; aliased for convenience
-- ``SentenceTransformersProvider`` -- local model (lazy import)
-- ``OpenAICompatibleEmbeddingProvider`` -- remote, OpenAI-compatible (MiniMax, etc.)
-- ``CachedEmbeddingProvider`` -- LRU cache wrapper around any provider,
-  also supports external (e.g. Redis) cache via ``cache_get``/``cache_put``
-  callables for cross-process cache sharing.
+* ``NullEmbeddingProvider`` for tests and offline-mode operation.
+* ``SentenceTransformersProvider`` for on-prem / local embedding using
+  the ``sentence-transformers`` library.
+* ``OpenAICompatibleEmbeddingProvider`` for any OpenAI-shaped remote
+  endpoint (OpenAI / MiniMax / ollama / vLLM).
 
-The ``openai`` and ``sentence-transformers`` packages are imported lazily
-inside the constructors, so the rest of ``uams`` does not require them.
-Install with ``pip install 'universal-agent-memory[embeddings]'`` or
-``pip install 'universal-agent-memory[llm]'`` (for the OpenAI-compatible path).
+Each provider is wrapped by ``CachedEmbeddingProvider`` which adds an
+LRU (and, optionally, a TTL 鈥?``ttl_seconds``) cache. Embedding work
+is deterministic per (provider, text), so caching is always safe.
+
+The ``openai`` package is imported lazily inside the OpenAI-compatible
+provider. Install with ``pip install 'universal-agent-memory[embeddings]'``
+to enable.
 """
 
-from __future__ import annotations
-
-import hashlib
 import json
+import hashlib
 import threading
-from typing import Callable, Iterable, List, Optional
+import time
+from typing import Callable, Iterable, List, Optional, Union
 
-from uams.embedding.base import EmbeddingProvider, NoOpEmbeddingProvider
+from uams.embedding.base import EmbeddingFn, EmbeddingProvider
 
 
-# Re-export the noop provider under a stable name
-NullEmbeddingProvider = NoOpEmbeddingProvider
+class NullEmbeddingProvider(EmbeddingProvider):
+    """Returns an empty vector for every text. Sentinel for tests."""
+
+    def embed(self, text: str) -> List[float]:  # type: ignore[override]
+        return []
 
 
 class SentenceTransformersProvider(EmbeddingProvider):
-    """Local sentence-transformers provider.
+    """Sentence-Transformers backed provider (local model)."""
 
-    Lazy-imports ``sentence_transformers`` so the package is optional.
-    Default model ``all-MiniLM-L6-v2`` (384 dims, ~80 MB).
-    """
-
-    def __init__(
-        self,
-        model_name: str = "all-MiniLM-L6-v2",
-        device: Optional[str] = None,
-        batch_size: int = 32,
-    ):
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
         try:
             from sentence_transformers import SentenceTransformer  # type: ignore
         except ImportError as exc:
             raise ImportError(
-                "sentence-transformers required. "
+                "sentence-transformers package required. "
                 "Install: pip install 'universal-agent-memory[embeddings]'"
             ) from exc
-        kwargs = {}
-        if device:
-            kwargs["device"] = device
-        self._model = SentenceTransformer(model_name, **kwargs)
-        self._batch_size = max(1, int(batch_size))
-        self._model_name = model_name
-
-    def embed(self, text: str) -> List[float]:
-        return list(self.embed_batch([text])[0])
-
-    def embed_batch(self, texts: Iterable[str]) -> List[List[float]]:
-        texts = list(texts)
-        if not texts:
-            return []
-        vectors = self._model.encode(
-            texts,
-            batch_size=self._batch_size,
-            convert_to_numpy=True,
-            show_progress_bar=False,
-        )
-        return [v.tolist() for v in vectors]
+        self._model = SentenceTransformer(model_name)
+        self._name = model_name
 
     @property
     def model_name(self) -> str:
-        return self._model_name
+        return self._name
 
     @property
     def dimension(self) -> int:
-        return int(self._model.get_sentence_embedding_dimension())
+        return self._model.get_sentence_embedding_dimension()
+
+    def embed(self, text: str) -> List[float]:  # type: ignore[override]
+        vec = self._model.encode([text], normalize_embeddings=True)[0]
+        return [float(x) for x in vec]
 
 
 class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
-    """Remote OpenAI-compatible embedding provider.
+    """OpenAI-compatible /embeddings endpoint.
 
-    Works with OpenAI, MiniMax, ollama (in OpenAI-compat mode), vLLM, etc.
-    Set ``base_url`` to the provider's endpoint.
+    Set ``base_url`` to point at any OpenAI-shaped provider:
+
+    * OpenAI:    ``https://api.openai.com/v1``
+    * MiniMax:   ``https://api.minimaxi.com/v1``
+    * ollama:    ``http://localhost:11434/v1``
+    * vLLM:      ``http://localhost:8000/v1``
     """
 
     def __init__(
@@ -93,8 +76,7 @@ class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
         api_key: str,
         base_url: str = "https://api.openai.com/v1",
         model: str = "text-embedding-3-small",
-        timeout: float = 10.0,
-        max_retries: int = 2,
+        timeout: float = 30.0,
     ):
         try:
             from openai import OpenAI  # type: ignore
@@ -106,25 +88,11 @@ class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
         if not api_key:
             raise ValueError("api_key is required for OpenAICompatibleEmbeddingProvider")
         self._client = OpenAI(
-            api_key=api_key, base_url=base_url, timeout=timeout, max_retries=max_retries
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
         )
         self._model = model
-        self._timeout = timeout
-
-    def embed(self, text: str) -> List[float]:
-        return self.embed_batch([text])[0]
-
-    def embed_batch(self, texts: Iterable[str]) -> List[List[float]]:
-        texts = list(texts)
-        if not texts:
-            return []
-        resp = self._client.embeddings.create(
-            model=self._model,
-            input=texts,
-            timeout=self._timeout,
-        )
-        # OpenAI returns embeddings in input order
-        return [list(d.embedding) for d in resp.data]
 
     @property
     def model_name(self) -> str:
@@ -135,6 +103,10 @@ class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
         # Remote: rely on explicit config; unknown until first response
         # (callers should set ``embedding_dimension`` explicitly for caching stability)
         return 0
+
+    def embed(self, text: str) -> List[float]:  # type: ignore[override]
+        resp = self._client.embeddings.create(model=self._model, input=[text])
+        return [float(x) for x in resp.data[0].embedding]
 
 
 class CachedEmbeddingProvider(EmbeddingProvider):
@@ -147,6 +119,12 @@ class CachedEmbeddingProvider(EmbeddingProvider):
     ``cache_get`` / ``cache_put`` callables. Values are JSON-serialized
     (``[v0, v1, ...]``) at the call layer so the external backend only
     needs to handle strings.
+
+    Optional ``ttl_seconds``: if set, cached entries carry an expiry
+    timestamp and stale entries are treated as cache misses on read. By
+    default (``ttl_seconds=None``) the cache keeps the original
+    forever-cache semantics 鈥?explicit opt-in to enable staleness bounds.
+    ``ttl_seconds <= 0`` is treated as ``None`` (defensive).
     """
 
     def __init__(
@@ -155,9 +133,14 @@ class CachedEmbeddingProvider(EmbeddingProvider):
         max_entries: int = 5000,
         cache_get: Optional[Callable[[str], Optional[str]]] = None,
         cache_put: Optional[Callable[[str, str], None]] = None,
+        ttl_seconds: Optional[float] = None,
+        clock: Callable[[], float] = time.monotonic,
     ):
         self._inner = inner
         self._external = cache_get is not None and cache_put is not None
+        # TTL semantics: None or <= 0 means "no expiry" (backward compatible).
+        self._ttl = float(ttl_seconds) if (ttl_seconds and ttl_seconds > 0) else None
+        self._clock = clock
         if self._external:
             self._cache_get = cache_get
             self._cache_put = cache_put
@@ -181,63 +164,85 @@ class CachedEmbeddingProvider(EmbeddingProvider):
         except Exception:
             return []
 
-    def embed(self, text: str) -> List[float]:
-        key = self._key(text)
+    # --- TTL envelope helpers ---
+    # Without TTL we store the JSON vec verbatim. With TTL we append
+    # "|<exp>" so a stale entry is treated as a miss instead of being
+    # silently served.
+
+    def _encode(self, raw: str, now: float) -> str:
+        if self._ttl is None:
+            return raw
+        return f"{raw}|{now + self._ttl:.6f}"
+
+    def _decode(self, raw, now):
+        if raw is None:
+            return None
+        if self._ttl is None:
+            return raw
+        sep = raw.rfind("|")
+        if sep < 0:
+            return None
+        exp_str = raw[sep + 1:]
+        try:
+            exp = float(exp_str)
+        except ValueError:
+            return None
+        if now >= exp:
+            return None
+        return raw[:sep]
+
+    def _lookup(self, key, now):
         if self._external:
             raw = self._cache_get(key)
-            if raw is not None:
-                return self._deserialize(raw)
         else:
             with self._lock:
-                cached = self._cache.get(key)
-            if cached is not None:
-                return list(cached)
-        result = list(self._inner.embed(text))
+                raw = self._cache.get(key)
+        decoded = self._decode(raw, now)
+        if decoded is None:
+            return None
+        return self._deserialize(decoded)
+
+    def _store(self, key, vec, now):
+        encoded = self._encode(self._serialize(vec), now)
         if self._external:
-            self._cache_put(key, self._serialize(result))
+            self._cache_put(key, encoded)
         else:
             with self._lock:
                 if len(self._cache) >= self._max:
                     self._cache.pop(next(iter(self._cache)))
-                self._cache[key] = result
+                self._cache[key] = encoded
+
+    def embed(self, text: str) -> List[float]:  # type: ignore[override]
+        key = self._key(text)
+        hit = self._lookup(key, self._clock())
+        if hit is not None:
+            return hit
+        result = list(self._inner.embed(text))
+        self._store(key, result, self._clock())
         return result
 
-    def embed_batch(self, texts: Iterable[str]) -> List[List[float]]:
+    def embed_batch(self, texts: Iterable[str]) -> List[List[float]]:  # type: ignore[override]
         texts = list(texts)
         if not texts:
             return []
         keys = [self._key(t) for t in texts]
+        now = self._clock()
         misses_idx: List[int] = []
         misses_text: List[str] = []
         results: List[Optional[List[float]]] = [None] * len(texts)
         for i, k in enumerate(keys):
-            if self._external:
-                raw = self._cache_get(k)
-                if raw is not None:
-                    results[i] = self._deserialize(raw)
-                else:
-                    misses_idx.append(i)
-                    misses_text.append(texts[i])
+            hit = self._lookup(k, now)
+            if hit is not None:
+                results[i] = hit
             else:
-                with self._lock:
-                    hit = self._cache.get(k)
-                if hit is not None:
-                    results[i] = list(hit)
-                else:
-                    misses_idx.append(i)
-                    misses_text.append(texts[i])
+                misses_idx.append(i)
+                misses_text.append(texts[i])
         if misses_text:
             new_vectors = self._inner.embed_batch(misses_text)
+            write_now = self._clock()
             for j, vec in zip(misses_idx, new_vectors):
                 results[j] = list(vec)
-                key = keys[j]
-                if self._external:
-                    self._cache_put(key, self._serialize(vec))
-                else:
-                    with self._lock:
-                        if len(self._cache) >= self._max:
-                            self._cache.pop(next(iter(self._cache)))
-                        self._cache[key] = list(vec)
+                self._store(keys[j], vec, write_now)
         return [r if r is not None else [] for r in results]
 
 

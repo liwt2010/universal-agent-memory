@@ -92,6 +92,72 @@ class TestLLMClientCache(unittest.TestCase):
         # m3 should have evicted one older entry -> all 3 inner calls were made
         self.assertEqual(len(inner._calls), 3)
 
+    def test_ttl_none_means_infinite(self):
+        """Backward compat: ttl_seconds=None keeps the old 'cache forever' behavior."""
+        inner = FakeLLMClient(["hello"])
+        cached = CachedLLMClient(inner, ttl_seconds=None)
+        cached.chat([{"role": "user", "content": "x"}])
+        cached.chat([{"role": "user", "content": "x"}])
+        cached.chat([{"role": "user", "content": "x"}])
+        self.assertEqual(len(inner._calls), 1)
+
+    def test_ttl_expired_evicts_stale_response(self):
+        """After TTL elapses, the cached value is treated as absent so the inner
+        client is invoked again. This prevents a hard-pin on stale model output
+        (e.g. an episodic summary that no longer reflects the user's current
+        preferences) — without it we'd be silently serving fake data.
+        """
+        inner = FakeLLMClient(["first", "second"])
+        now = [100.0]
+        cached = CachedLLMClient(inner, ttl_seconds=10.0, clock=lambda: now[0])
+        msg = [{"role": "user", "content": "x"}]
+        self.assertEqual(cached.chat(msg), "first")
+        # 7 seconds later — within TTL — second call should hit cache.
+        now[0] = 107.0
+        self.assertEqual(cached.chat(msg), "first")
+        # 11 seconds later — past TTL — must recompute.
+        now[0] = 111.0
+        self.assertEqual(cached.chat(msg), "second")
+        self.assertEqual(len(inner._calls), 2)
+
+    def test_ttl_negative_or_zero_treated_as_none(self):
+        """Defensive: ttl<=0 should disable expiry, not poison every entry."""
+        inner = FakeLLMClient(["hello"])
+        cached = CachedLLMClient(inner, ttl_seconds=0.0)
+        cached.chat([{"role": "user", "content": "x"}])
+        cached.chat([{"role": "user", "content": "x"}])
+        self.assertEqual(len(inner._calls), 1)
+
+    def test_ttl_external_backend_uses_envelope(self):
+        """Even when routed through external cache_get/cache_put, the client
+        writes a TTL envelope so a downstream process with a different clock
+        still respects the configured TTL.
+        """
+        store: dict = {}
+        inner = FakeLLMClient(["a", "b"])
+        cached = CachedLLMClient(
+            inner,
+            ttl_seconds=10.0,
+            cache_get=store.get,
+            cache_put=store.__setitem__,
+            clock=lambda: 100.0,
+        )
+        msg = [{"role": "user", "content": "x"}]
+        # Seed envelope at t=100 (expires at 110).
+        cached.chat(msg)
+        # Fresh client instance reads via same external backend but with
+        # clock far past expiry.
+        inner2 = FakeLLMClient(["b"])
+        cached2 = CachedLLMClient(
+            inner2,
+            ttl_seconds=10.0,
+            cache_get=store.get,
+            cache_put=store.__setitem__,
+            clock=lambda: 200.0,  # well past 110
+        )
+        cached2.chat(msg)
+        self.assertEqual(len(inner2._calls), 1)  # recompute fired
+
 
 class TestNullLLMClient(unittest.TestCase):
     def test_chat_raises(self):

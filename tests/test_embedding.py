@@ -89,6 +89,52 @@ class TestCachedEmbeddingProvider(unittest.TestCase):
         # All "x" results must be identical
         self.assertEqual(result[0], result[2])
 
+    def test_ttl_none_means_infinite(self):
+        """Backward compat: ttl_seconds=None keeps the original forever-cache semantics."""
+        inner = FakeEmbeddingProvider()
+        cached = CachedEmbeddingProvider(inner, ttl_seconds=None)
+        cached.embed("x")
+        cached.embed("x")
+        cached.embed("x")
+        self.assertEqual(inner.call_count, 1)
+
+    def test_ttl_expired_recomputes_vector(self):
+        """After TTL elapses, stale vector is dropped so the upstream embedding
+        is invoked again. Without this, a model upgrade or text-content drift
+        would be permanently invisible to retrieval.
+        """
+        inner = FakeEmbeddingProvider()
+        now = [100.0]
+        cached = CachedEmbeddingProvider(
+            inner, ttl_seconds=10.0, clock=lambda: now[0]
+        )
+        cached.embed("x")
+        # Within TTL: cache hit, no further inner call.
+        now[0] = 105.0
+        cached.embed("x")
+        self.assertEqual(inner.call_count, 1)
+        # Past TTL: cache miss, inner call fires again.
+        now[0] = 200.0
+        cached.embed("x")
+        self.assertEqual(inner.call_count, 2)
+
+    def test_ttl_expired_during_batch_recomputes_misses_only(self):
+        """Batch with mixed TTL ages must recompute only the stale entries."""
+        inner = FakeEmbeddingProvider()
+        now = [100.0]
+        cached = CachedEmbeddingProvider(
+            inner, ttl_seconds=10.0, clock=lambda: now[0]
+        )
+        cached.embed("a")  # prime a at t=100, expires 110
+        now[0] = 105.0
+        cached.embed("b")  # prime b at t=105, expires 115
+        # Move clock past a's expiry but before b's: only a must be refetched.
+        now[0] = 112.0
+        cached.embed_batch(["a", "b"])
+        # inner.call_count went from 2 (a, b primed) up by exactly 1 (a refetch).
+        self.assertEqual(inner.call_count, 3)
+        self.assertEqual(inner.batch_call_count, 1)
+
 
 class TestNullEmbeddingProvider(unittest.TestCase):
     def test_returns_empty(self):
