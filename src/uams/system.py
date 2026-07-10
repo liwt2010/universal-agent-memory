@@ -7,6 +7,7 @@ All operations are thread-safe and include error handling with graceful degradat
 import threading
 from typing import Callable, Dict, List, Optional
 
+from uams.llm.client import LLMClient
 from uams.core.enums import EventType, MemoryType, PrivacyLevel
 from uams.core.models import (
     AgentContext,

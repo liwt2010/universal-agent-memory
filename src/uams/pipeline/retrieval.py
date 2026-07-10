@@ -8,6 +8,9 @@ from uams.core.enums import MemoryType
 from uams.core.models import AgentContext, Memory
 from uams.pipeline.query_rewrite import QueryRewriter
 from uams.storage.base import MemoryStore
+from uams.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class RetrievalPipeline:

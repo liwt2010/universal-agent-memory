@@ -248,15 +248,16 @@ class PostgreSQLStore(MemoryStore):
              provenance_str, agent_id, agent_type, session_id, user_id,
              team_id, project_id) = row
 
-            structured = json.loads(structured_str) if structured_str else None
+            structured = self._coerce_json(structured_str)
             embedding = pickle.loads(embedding_blob) if embedding_blob else None
-            tags = set(json.loads(tags_str)) if tags_str else set()
-            categories = set(json.loads(categories_str)) if categories_str else set()
+            tags = set(self._coerce_json(tags_str) or [])
+            categories = set(self._coerce_json(categories_str) or [])
+            relations_raw = self._coerce_json(relations_str) or []
             relations = [
                 Relation(r["type"], r["target"], strength=r.get("strength", 1.0))
-                for r in json.loads(relations_str)
-            ] if relations_str else []
-            provenance = json.loads(provenance_str) if provenance_str else []
+                for r in relations_raw
+            ]
+            provenance = self._coerce_json(provenance_str) or []
 
             return Memory(
                 id=MemoryId(id_str),
@@ -293,6 +294,22 @@ class PostgreSQLStore(MemoryStore):
         except Exception as e:
             logger.exception("Failed to deserialize PostgreSQL row: %s", e)
             return None
+
+    @staticmethod
+    def _coerce_json(value):
+        """Return a Python object from either a JSON string or already-decoded value.
+
+        Psycopg2 2.9+ registers a default JSON adapter that turns JSONB columns
+        into ``dict`` / ``list`` before we see them. Older drivers or mocks
+        return raw strings. Both must round-trip cleanly.
+        """
+        if value is None:
+            return None
+        if isinstance(value, (dict, list)):
+            return value
+        if isinstance(value, (bytes, bytearray)):
+            value = value.decode("utf-8")
+        return json.loads(value)
 
     def store(self, memory: Memory) -> None:
         if not self._available or not self._pool:
