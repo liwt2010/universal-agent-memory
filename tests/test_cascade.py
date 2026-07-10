@@ -213,5 +213,26 @@ class TestAuditConcurrency(unittest.TestCase):
             json.loads(ln)
 
 
+class TestConfigCascadeFields(unittest.TestCase):
+    def test_defaults(self):
+        from uams.config import UAMSConfig
+        c = UAMSConfig()
+        self.assertEqual(c.cascade_in_edge_strategy, "auto")
+        self.assertEqual(c.cascade_max_depth, 4)
+        self.assertEqual(c.cascade_audit_log_path, "logs/cascade_forget_audit.jsonl")
+        self.assertEqual(c.cascade_orphan_log_path, "logs/cascade_orphan_log.jsonl")
+
+    def test_can_override(self):
+        from uams.config import UAMSConfig
+        c = UAMSConfig(
+            cascade_in_edge_strategy="scan",
+            cascade_max_depth=8,
+            cascade_audit_log_path="custom/audit.jsonl",
+        )
+        self.assertEqual(c.cascade_in_edge_strategy, "scan")
+        self.assertEqual(c.cascade_max_depth, 8)
+        self.assertEqual(c.cascade_audit_log_path, "custom/audit.jsonl")
+
+
 if __name__ == "__main__":
     unittest.main()
