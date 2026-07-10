@@ -90,6 +90,83 @@ class CascadeForgetter:
         self._config = config
         self._audit = audit_writer
 
+    # ------------------------------------------------------------------
+    # Discovery helpers (Task 4)
+    # ------------------------------------------------------------------
+
+    def _locate_tier(self, memory_id: str) -> Optional[MemoryType]:
+        """Find the tier that holds `memory_id`, or None if absent.
+
+        Tries retrieve() on each tier in declaration order. Treats
+        exceptions as "not found" so a partially-degraded backend
+        doesn't poison the cascade.
+        """
+        for tier, store in self._stores.items():
+            try:
+                if store.retrieve(memory_id) is not None:
+                    return tier
+            except Exception:
+                continue
+        return None
+
+    def _discover_in_edges(
+        self,
+        target_id: str,
+        tier: MemoryType,
+        mode: Optional[str] = None,
+    ) -> List[Tuple[str, MemoryType]]:
+        """Return list of (source_memory_id, source_tier) referencing target_id.
+
+        Modes (per spec sec 7):
+          'scan'  O(N) walk all stores via list_all, filter on relations.
+          'index' Use store._reverse_index() if available, else empty.
+          'auto'  Try index per-store; fall back to scan per-store.
+        """
+        mode = mode or self._config.cascade_in_edge_strategy
+        results: List[Tuple[str, MemoryType]] = []
+
+        for t, store in self._stores.items():
+            if mode == "index":
+                rev = getattr(store, "_reverse_index", None)
+                if rev:
+                    sources = rev.get(target_id) or []
+                    results.extend((s, t) for s in sources)
+            elif mode == "scan":
+                results.extend(self._scan_in_edges_for_store(store, target_id, t))
+            elif mode == "auto":
+                rev = getattr(store, "_reverse_index", None)
+                if rev is not None:
+                    sources = rev.get(target_id) or []
+                    results.extend((s, t) for s in sources)
+                else:
+                    results.extend(self._scan_in_edges_for_store(store, target_id, t))
+            else:
+                raise ValueError(
+                    f"Unknown cascade_in_edge_strategy: {mode!r} "
+                    "(expected 'scan' | 'index' | 'auto')"
+                )
+        return results
+
+    def _scan_in_edges_for_store(
+        self, store: MemoryStore, target_id: str, tier: MemoryType,
+    ) -> List[Tuple[str, MemoryType]]:
+        """O(N) scan: list_all then filter relations whose target == target_id."""
+        out: List[Tuple[str, MemoryType]] = []
+        try:
+            iterator = store.list_all(limit=10_000_000)
+        except Exception:
+            return out
+        for mem in iterator:
+            for rel in mem.metadata.relations:
+                if rel.target_memory_id == target_id:
+                    out.append((str(mem.id), tier))
+                    break
+        return out
+
+    # ------------------------------------------------------------------
+    # forget() - implementation lands in Task 5
+    # ------------------------------------------------------------------
+
     def forget(
         self,
         memory_id: str,

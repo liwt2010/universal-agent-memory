@@ -234,5 +234,79 @@ class TestConfigCascadeFields(unittest.TestCase):
         self.assertEqual(c.cascade_audit_log_path, "custom/audit.jsonl")
 
 
+class TestLocateTier(unittest.TestCase):
+    def _stores(self):
+        s = _InMemStore(MemoryType.SEMANTIC)
+        w = _InMemStore(MemoryType.WORKING)
+        s.store(_make_mem("m1", "x"))
+        return {MemoryType.SEMANTIC: s, MemoryType.WORKING: w}
+
+    def test_locates_tier(self):
+        from uams.pipeline.cascade import CascadeForgetter
+        f = CascadeForgetter(self._stores(), UAMSConfig(), CascadeAuditWriter())
+        self.assertEqual(f._locate_tier("m1"), MemoryType.SEMANTIC)
+
+    def test_returns_none_when_absent(self):
+        from uams.pipeline.cascade import CascadeForgetter
+        f = CascadeForgetter(self._stores(), UAMSConfig(), CascadeAuditWriter())
+        self.assertIsNone(f._locate_tier("nope"))
+
+    def test_locates_correctly_across_multiple_stores(self):
+        from uams.pipeline.cascade import CascadeForgetter
+        s = _InMemStore(MemoryType.SEMANTIC)
+        e = _InMemStore(MemoryType.EPISODIC)
+        s.store(_make_mem("s-1", "x", tier=MemoryType.SEMANTIC))
+        e.store(_make_mem("e-1", "y", tier=MemoryType.EPISODIC))
+        f = CascadeForgetter(
+            {MemoryType.SEMANTIC: s, MemoryType.EPISODIC: e},
+            UAMSConfig(),
+            CascadeAuditWriter(),
+        )
+        self.assertEqual(f._locate_tier("s-1"), MemoryType.SEMANTIC)
+        self.assertEqual(f._locate_tier("e-1"), MemoryType.EPISODIC)
+
+
+class TestDiscoverInEdges(unittest.TestCase):
+    def _stores_with_fwd_chain(self):
+        s = _InMemStore(MemoryType.SEMANTIC)
+        s.store(_make_mem("m1", "source",
+                          relations=[{"type": "follows", "target_memory_id": "m2"}]))
+        s.store(_make_mem("m2", "target"))
+        return {MemoryType.SEMANTIC: s}
+
+    def test_scan_mode_finds_in_edges(self):
+        from uams.pipeline.cascade import CascadeForgetter
+        f = CascadeForgetter(
+            self._stores_with_fwd_chain(),
+            UAMSConfig(cascade_in_edge_strategy="scan"),
+            CascadeAuditWriter(),
+        )
+        in_edges = f._discover_in_edges("m2", MemoryType.SEMANTIC, mode="scan")
+        ids = {mid for mid, _tier in in_edges}
+        self.assertIn("m1", ids)
+
+    def test_index_mode_returns_empty_when_no_adapter(self):
+        from uams.pipeline.cascade import CascadeForgetter
+        s = self._stores_with_fwd_chain()[MemoryType.SEMANTIC]
+        f = CascadeForgetter(
+            {MemoryType.SEMANTIC: s},
+            UAMSConfig(),
+            CascadeAuditWriter(),
+        )
+        in_edges = f._discover_in_edges("m2", MemoryType.SEMANTIC, mode="index")
+        self.assertEqual(in_edges, [])
+
+    def test_auto_mode_falls_back_to_scan(self):
+        from uams.pipeline.cascade import CascadeForgetter
+        f = CascadeForgetter(
+            self._stores_with_fwd_chain(),
+            UAMSConfig(),
+            CascadeAuditWriter(),
+        )
+        in_edges = f._discover_in_edges("m2", MemoryType.SEMANTIC, mode="auto")
+        ids = {mid for mid, _tier in in_edges}
+        self.assertIn("m1", ids)
+
+
 if __name__ == "__main__":
     unittest.main()
