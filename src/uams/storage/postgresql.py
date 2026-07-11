@@ -11,7 +11,6 @@ Features:
 """
 
 import json
-import pickle
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -22,6 +21,7 @@ from uams.core.models import (
 )
 from uams.core.enums import MemoryType, PrivacyLevel
 from uams.utils.logging import get_logger
+from uams.utils.embedding_serde import serialize_embedding, deserialize_embedding
 
 logger = get_logger(__name__)
 
@@ -220,7 +220,7 @@ class PostgreSQLStore(MemoryStore):
             "expires_at": memory.anchor.expires_at,
             "raw": memory.payload.raw,
             "structured": json.dumps(memory.payload.structured) if memory.payload.structured else None,
-            "embedding": pickle.dumps(memory.payload.embedding) if memory.payload.embedding else None,
+            "embedding": serialize_embedding(memory.payload.embedding),
             "memory_type": memory.metadata.memory_type.name,
             "privacy": memory.metadata.privacy.name,
             "importance": memory.metadata.importance,
@@ -249,7 +249,7 @@ class PostgreSQLStore(MemoryStore):
              team_id, project_id) = row
 
             structured = self._coerce_json(structured_str)
-            embedding = pickle.loads(embedding_blob) if embedding_blob else None
+            embedding = deserialize_embedding(embedding_blob)
             tags = set(self._coerce_json(tags_str) or [])
             categories = set(self._coerce_json(categories_str) or [])
             relations_raw = self._coerce_json(relations_str) or []

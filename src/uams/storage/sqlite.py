@@ -9,7 +9,6 @@ All write operations are atomic (BEGIN/COMMIT/ROLLBACK).
 import json
 import sqlite3
 import threading
-import pickle
 from queue import Queue
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -17,6 +16,7 @@ from uams.storage.base import MemoryStore
 from uams.core.models import Memory, MemoryId, TemporalAnchor, AgentContext, MemoryPayload, MemoryMetadata, Relation
 from uams.core.enums import MemoryType, PrivacyLevel, EventType
 from uams.utils.logging import get_logger
+from uams.utils.embedding_serde import serialize_embedding, deserialize_embedding
 
 logger = get_logger(__name__)
 
@@ -189,7 +189,7 @@ class SQLiteStore(MemoryStore):
             memory.anchor.expires_at,
             memory.payload.raw,
             json.dumps(memory.payload.structured) if memory.payload.structured else None,
-            sqlite3.Binary(pickle.dumps(memory.payload.embedding)) if memory.payload.embedding else None,
+            sqlite3.Binary(serialize_embedding(memory.payload.embedding)) if memory.payload.embedding else None,
             memory.metadata.memory_type.name,
             memory.metadata.privacy.name,
             memory.metadata.importance,
@@ -216,7 +216,7 @@ class SQLiteStore(MemoryStore):
         ) = row
 
         structured = json.loads(structured_str) if structured_str else None
-        embedding = pickle.loads(embedding_blob) if embedding_blob else None
+        embedding = deserialize_embedding(embedding_blob)
         tags = set(json.loads(tags_str)) if tags_str else set()
         categories = set(json.loads(categories_str)) if categories_str else set()
         relations = [Relation(

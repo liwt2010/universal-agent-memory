@@ -5,7 +5,6 @@ Provides distributed cache, pub/sub signals, and TTL-based expiry.
 """
 
 import json
-import pickle
 import threading
 from typing import Any, Dict, List, Optional
 
@@ -16,6 +15,7 @@ from uams.core.models import (
 )
 from uams.core.enums import MemoryType, PrivacyLevel, EventType
 from uams.utils.logging import get_logger
+from uams.utils.embedding_serde import serialize_embedding, deserialize_embedding
 
 logger = get_logger(__name__)
 
@@ -106,7 +106,7 @@ class RedisStore(MemoryStore):
             b"expires_at": str(memory.anchor.expires_at or 0).encode("utf-8"),
             b"raw": memory.payload.raw.encode("utf-8"),
             b"structured": json.dumps(memory.payload.structured).encode("utf-8") if memory.payload.structured else b"null",
-            b"embedding": pickle.dumps(memory.payload.embedding) if memory.payload.embedding else b"null",
+            b"embedding": serialize_embedding(memory.payload.embedding) or b"null",
             b"memory_type": memory.metadata.memory_type.name.encode("utf-8"),
             b"privacy": memory.metadata.privacy.name.encode("utf-8"),
             b"importance": str(memory.metadata.importance).encode("utf-8"),
@@ -145,7 +145,7 @@ class RedisStore(MemoryStore):
 
             structured = get_json(b"structured")
             embedding_data = data.get(b"embedding", b"null")
-            embedding = pickle.loads(embedding_data) if embedding_data != b"null" else None
+            embedding = deserialize_embedding(embedding_data) if embedding_data != b"null" else None
 
             tags_data = get_json(b"tags")
             categories_data = get_json(b"categories")
