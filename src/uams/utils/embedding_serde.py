@@ -37,6 +37,10 @@ def deserialize_embedding(blob: Optional[bytes]) -> Optional[List[float]]:
     """
     if not blob:
         return None
+    # psycopg2 returns memoryview for binary columns; coerce to bytes first
+    # so json.loads / pickle.loads / bytes-prefix slicing all work uniformly.
+    if isinstance(blob, memoryview):
+        blob = blob.tobytes() if hasattr(blob, "tobytes") else bytes(blob)
     if isinstance(blob, (bytes, bytearray)) and bytes(blob[:1]) == _EMBEDDING_PICKLE_MARKER:
         logger.warning(
             "Loading legacy pickle-encoded embedding blob; "

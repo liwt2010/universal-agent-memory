@@ -81,6 +81,20 @@ class TestDeserializeEmbedding(unittest.TestCase):
         result = deserialize_embedding(blob)
         self.assertEqual(result, vec)
 
+    def test_memoryview_input_handled(self):
+        """memoryview (e.g. from psycopg2 binary column) must be coerced
+        to bytes before json.loads — psycopg2 returns memoryview, not bytes,
+        and json.JSONDecoder rejects memoryview directly."""
+        vec = [0.9, -0.1, 0.42]
+        blob = memoryview(json.dumps(vec).encode("utf-8"))
+        # Sanity: json.JSONDecoder really does reject memoryview
+        import json as _json
+        with self.assertRaises(TypeError):
+            _json.loads(blob)
+        # But our helper must handle it
+        result = deserialize_embedding(blob)
+        self.assertEqual(result, vec)
+
 
 if __name__ == "__main__":
     unittest.main()
