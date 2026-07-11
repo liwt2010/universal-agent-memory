@@ -126,6 +126,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per-user, auto-tuned).
 - Local: 385 → **402 tests pass** (+17), 32 still skipped (server-gated), 0 regressions.
 
+### Added
+- **`benchmarks/stress_test.py`** (100k A+ requirement): real-backend
+  concurrent stress test for UAMS storage backends. Mixes store /
+  retrieve / search / delete operations across N worker threads,
+  measures ops/sec, p50/p95/p99 latency, error rate, and RSS memory
+  growth. Emits a JSON report with per-op breakdown and warnings
+  for regressions (error rate > 1%, p95 > 1s, RSS growth > 200MB,
+  incomplete ops). Supports all 6 backends (memory / sqlite /
+  postgresql / redis / neo4j / chromadb) via `--backend=...`.
+  - **Default = 10k ops, 8 threads** (smoke / CI gate). 100k ops
+    is the A+ target; run with `--ops 100000 --concurrency 32`.
+  - **Known issues surfaced by smoke** (pre-existing, not new bugs):
+    SQLite at concurrency > pool_size (5) hits "database is
+    locked" — surfaces a tuning opportunity. FTS5 fallback in
+    `storage/sqlite.py` treats hyphens in queries as column names
+    (a SQL fallback bug) — flagged for follow-up, not fixed here.
+- **CI: `stress-test-real-deps` matrix job** in `.github/workflows/ci.yml`:
+  runs the 100k-ops stress test against PostgreSQL, ChromaDB,
+  Redis, and Neo4j service containers. `continue-on-error: true`
+  (informational, not a hard gate) because real-world backends
+  can flake at high concurrency on hosted runners. JSON report
+  uploaded as a per-backend artifact for trend tracking.
+- **`docs/STRESS_TEST.md`**: full guide — quick start, what the
+  warnings mean, what the test catches (lock contention, memory
+  leaks, FTS5 edge cases, connection pool exhaustion) and what it
+  does NOT (real-world traffic, multi-tenant, LLM cost). Known
+  false-positive patterns documented.
+- **`docs/LONG_TERM_LLM.md`**: honest assessment of the
+  "real LLM 1+ month" A+ condition. **This is a time investment,
+  not a code deliverable** — explicitly scoped. The doc covers
+  what code CAN deliver (telemetry hooks, dry-run harness, cost
+  guardrails), what the operator must do (run with real LLM for
+  30+ days), and why this is the A+ condition most likely to
+  fail. Recommendation: start the 30-day run in parallel with
+  the other A+ conditions.
+- 11 new unit tests in `tests/test_stress_test.py` covering the
+  StressRunner logic on InMemoryStore: percentile helpers, mix
+  parsing, JSON serialization, basic run, per-op breakdown,
+  concurrency distribution (the original `ops // concurrency`
+  formula dropped `ops % concurrency` ops; the runner now
+  distributes evenly with the first N workers getting the extra
+  op).
+- Local: 402 → **413 tests pass** (+11), 32 still skipped (server-gated), 0 regressions.
+
 ### Security hardening
 - **`pickle.loads` → `json.loads` for embedding blobs** (R1): `utils/embedding_serde.py`
   new helper. Writes always use JSON (no RCE risk if storage is compromised).
