@@ -386,7 +386,7 @@ universal-agent-memory/
 │   ├── research_agent.py
 │   ├── multi_agent.py
 │   └── _token_compression_demo.py
-├── tests/                  # 346 个测试
+├── tests/                  # 375 个测试
 │   ├── test_system.py
 │   ├── test_chaos.py
 │   ├── test_aplus.py
@@ -458,7 +458,7 @@ python tests/test_system.py
 | **6 后端真实验证(CI 9/9 green)** | **PG / ChromaDB / Redis / Neo4j / SQLite / InMemory 全部真实 service 跑通** |
 | **级联删除** | **三策略 + visit-set + 最大深度上限 + 跨层隔离 + 最佳努力删除 + JSONL 审计** |
 
-**测试规模**:346 测试(本地 21 skip:无 PG/Redis/Neo4j service 时跳过真实后端;CI 上全部跑通)。
+**测试规模**:375 测试(本地 32 skip:无 PG/Redis/Neo4j service 时跳过真实后端;CI 上全部跑通)。
 
 ---
 

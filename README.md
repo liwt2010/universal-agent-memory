@@ -2,7 +2,7 @@
   <img src="https://img.shields.io/badge/version-0.1.0-blue.svg" alt="Version 0.1.0">
   <img src="https://img.shields.io/badge/python-3.9%2B-blue.svg" alt="Python 3.9+">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT">
-  <img src="https://img.shields.io/badge/tests-346%20passing-brightgreen.svg" alt="346 Tests Passing">
+  <img src="https://img.shields.io/badge/tests-375%20passing-brightgreen.svg" alt="375 Tests Passing">
   <img src="https://img.shields.io/badge/token%20compression-72%25%20savings-success.svg" alt="Token Compression 72% Savings">
   <img src="https://img.shields.io/badge/embeddings-pluggable-blueviolet.svg" alt="Pluggable Embeddings">
   <img src="https://img.shields.io/badge/backends-6%20storage%20engines-blueviolet.svg" alt="6 Storage Backends">
@@ -396,7 +396,7 @@ pytest tests/ -v
 pytest tests/ --cov=src/uams --cov-report=html
 ```
 
-**Test Results:** 346 tests, 0 failures, 21 skipped locally (PG/Redis/Neo4j service-gated; CI runs all 6 real backends green)
+**Test Results:** 375 tests, 0 failures, 32 skipped locally (PG/Redis/Neo4j service-gated; CI runs all 6 real backends green)
 
 | Test Category | Count | Coverage |
 |--------------|-------|----------|
@@ -415,7 +415,7 @@ pytest tests/ --cov=src/uams --cov-report=html
 | Mock storage (Redis / Neo4j) | 16 | Storage/retrieve/search/graph/PubSub/expiry |
 | **Real backend e2e (CI)** | **+50** | **6/6 storage engines verified in CI: PG / ChromaDB / Redis / Neo4j / SQLite / InMemory** |
 | **Cascade forget** | **+29** | **Strategy enum + audit writer + BFS + cycle/cross-tier/partial + system rewire** |
-| **Total** | **346** | **All passing locally (21 skipped, server-gated); CI 9/9 green for 6/6 backends** |
+| **Total** | **375** | **All passing locally (32 skipped, server-gated); CI 9/9 green for 6/6 backends** |
 
 ---
 
@@ -467,7 +467,7 @@ universal-agent-memory/
 │   ├── research_agent.py
 │   ├── multi_agent.py
 │   └── _token_compression_demo.py
-├── tests/                      # 346 test cases
+├── tests/                      # 375 test cases
 │   ├── test_system.py
 │   ├── test_chaos.py
 │   ├── test_aplus.py
