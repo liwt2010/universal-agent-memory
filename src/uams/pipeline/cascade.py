@@ -23,10 +23,30 @@ class CascadeStrategy(str, Enum):
     """Cascade behavior when forgetting a memory.
 
     Inheriting `str` makes instances JSON-serializable without a custom encoder.
+
+    Strategies differ in **scope** (which directions to follow) and
+    **strictness** (whether cross-tier edges block or get followed):
+
+    - ISOLATED       : delete target only
+    - OUTGOING       : delete target + out-edges (BFS), same-tier only
+    - BIDIRECTIONAL  : delete target + out-edges + in-edges (BFS), same-tier only;
+                       cross-tier edges recorded as `orphan_ids` (NOT deleted).
+                       **Default.** Aligns with "right to be forgotten" within
+                       a single storage tier (e.g. delete the user's session
+                       in Episodic, leave the related facts in Semantic for
+                       a separate decision).
+    - FULL_CASCADE   : **explicit opt-in only.** delete target + out-edges +
+                       in-edges across all tiers. Cross-tier edges ARE
+                       deleted (not orphan). The audit log still records
+                       every deletion with its tier, so the trail is
+                       intact. Use this when a user invokes GDPR Article 17
+                       and wants the data gone from every storage layer
+                       UAMS owns, not just the originating tier.
     """
     ISOLATED = "isolated"
     OUTGOING = "outgoing"
     BIDIRECTIONAL = "bidirectional"
+    FULL_CASCADE = "full_cascade"
 
 
 @dataclass
@@ -37,6 +57,11 @@ class CascadeReport:
     strategy: CascadeStrategy
 
     deleted_ids: List[str] = field(default_factory=list)
+    # In FULL_CASCADE mode, cross-tier edges that were also deleted
+    # are recorded here as (id, original_tier) so the operator can see
+    # exactly which memories left the system and from which storage layer.
+    # This is the GDPR-friendly "right to be forgotten" trail.
+    cross_tier_deleted_ids: List[Tuple[str, str]] = field(default_factory=list)
     orphan_ids:  List[Tuple[str, str]] = field(default_factory=list)
     failed_ids:  List[Tuple[str, str]] = field(default_factory=list)
 
@@ -45,6 +70,9 @@ class CascadeReport:
 
     @property
     def deleted_count(self) -> int: return len(self.deleted_ids)
+
+    @property
+    def cross_tier_deleted_count(self) -> int: return len(self.cross_tier_deleted_ids)
 
     @property
     def orphan_count(self) -> int:  return len(self.orphan_ids)
@@ -57,19 +85,21 @@ class CascadeReport:
 
     def to_dict(self) -> dict:
         return {
-            "ts":            datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-            "action":        "cascade_forget",
-            "target_id":     self.target_id,
-            "tier":          self.tier.name if self.tier is not None else None,
-            "strategy":      self.strategy.value,
-            "deleted_count": self.deleted_count,
-            "orphan_count":  self.orphan_count,
-            "failed_count":  self.failed_count,
-            "deleted_ids":   list(self.deleted_ids),
-            "orphan_ids":    [list(p) for p in self.orphan_ids],
-            "failed_ids":    [list(p) for p in self.failed_ids],
-            "duration_ms":   self.duration_ms,
-            "is_complete":   self.is_complete,
+            "ts":                      datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "action":                  "cascade_forget",
+            "target_id":               self.target_id,
+            "tier":                    self.tier.name if self.tier is not None else None,
+            "strategy":                self.strategy.value,
+            "deleted_count":           self.deleted_count,
+            "cross_tier_deleted_count": self.cross_tier_deleted_count,
+            "orphan_count":            self.orphan_count,
+            "failed_count":            self.failed_count,
+            "deleted_ids":             list(self.deleted_ids),
+            "cross_tier_deleted_ids":  [list(p) for p in self.cross_tier_deleted_ids],
+            "orphan_ids":              [list(p) for p in self.orphan_ids],
+            "failed_ids":              [list(p) for p in self.failed_ids],
+            "duration_ms":             self.duration_ms,
+            "is_complete":             self.is_complete,
         }
 
 
@@ -179,10 +209,16 @@ class CascadeForgetter:
 
         Three phases:
           1. locate target tier; absent -> audit-only line.
-          2. BFS over relations with visit-set + max_depth, same-tier only;
-             cross-tier edges added to orphan_ids.
-          3. best-effort delete leaves-first; per-memory exceptions
-             land in failed_ids. Audit-log line written either way.
+          2. BFS over relations with visit-set + max_depth. In
+             ISOLATED / OUTGOING / BIDIRECTIONAL strategies, cross-tier
+             edges are recorded as `orphan_ids` (not deleted). In
+             FULL_CASCADE (explicit opt-in), cross-tier edges are
+             followed: the discovered memory is deleted from its own
+             tier and the cross-tier deletion is recorded in
+             `cross_tier_deleted_ids` for the audit trail.
+          3. best-effort delete leaves-first across whatever tiers the
+             BFS discovered; per-memory exceptions land in `failed_ids`.
+             Audit-log line written either way.
 
         Never raises out of cascade: any exception becomes a
         report entry.
@@ -198,6 +234,10 @@ class CascadeForgetter:
             max_depth = self._config.cascade_max_depth
         if in_edge_mode is None:
             in_edge_mode = self._config.cascade_in_edge_strategy
+
+        # FULL_CASCADE follows cross-tier edges; everything else stops
+        # at the tier boundary and orphans the foreign memory.
+        follows_cross_tier = strategy == CascadeStrategy.FULL_CASCADE
 
         # --- locate target tier ---
         target_tier = self._locate_tier(memory_id)
@@ -217,25 +257,32 @@ class CascadeForgetter:
         target_store = self._stores[target_tier]
 
         # --- Phase 1: BFS discover ---
+        # Queue carries (id, tier, depth) so the loop can dispatch
+        # retrieve/delete to the correct store when FULL_CASCADE lets
+        # us cross tier boundaries.
         visit_set: Set[str] = {memory_id}
-        queue: Deque[Tuple[str, int]] = deque([(memory_id, 0)])
-        discovered: List[str] = []
+        queue: Deque[Tuple[str, MemoryType, int]] = deque([(memory_id, target_tier, 0)])
+        # (id, originating_tier) — same-tier items have tier == target_tier;
+        # cross-tier items carry the tier they were discovered in, so the
+        # delete phase hits the right store and the audit records the tier.
+        discovered: List[Tuple[str, MemoryType]] = []
 
         while queue:
-            cur_id, depth = queue.popleft()
+            cur_id, cur_tier, depth = queue.popleft()
             # Stop expanding beyond the depth cap. With max_depth=N we walk
             # N hops from root, processing levels 0..N inclusive (N+1 levels).
             if depth > max_depth:
                 continue
+            cur_store = self._stores[cur_tier]
             try:
-                mem = target_store.retrieve(cur_id)
+                mem = cur_store.retrieve(cur_id)
             except Exception:
                 continue
             if mem is None:
                 continue
-            discovered.append(cur_id)
+            discovered.append((cur_id, cur_tier))
 
-            if strategy in (CascadeStrategy.OUTGOING, CascadeStrategy.BIDIRECTIONAL):
+            if strategy in (CascadeStrategy.OUTGOING, CascadeStrategy.BIDIRECTIONAL, CascadeStrategy.FULL_CASCADE):
                 for rel in mem.metadata.relations:
                     tgt = rel.target_memory_id
                     if tgt in visit_set:
@@ -243,29 +290,48 @@ class CascadeForgetter:
                     tgt_tier = self._locate_tier(tgt)
                     if tgt_tier is None:
                         continue
-                    if tgt_tier != target_tier:
-                        report.orphan_ids.append((tgt, cur_id))
+                    if tgt_tier != cur_tier:
+                        if follows_cross_tier:
+                            # FULL_CASCADE: follow the cross-tier edge.
+                            # The delete phase will hit the right store
+                            # because we record tgt_tier alongside tgt.
+                            visit_set.add(tgt)
+                            queue.append((tgt, tgt_tier, depth + 1))
+                        else:
+                            # Other strategies: orphan, don't follow.
+                            report.orphan_ids.append((tgt, cur_id))
                         continue
                     visit_set.add(tgt)
-                    queue.append((tgt, depth + 1))
+                    queue.append((tgt, tgt_tier, depth + 1))
 
-            if strategy == CascadeStrategy.BIDIRECTIONAL:
+            if strategy in (CascadeStrategy.BIDIRECTIONAL, CascadeStrategy.FULL_CASCADE):
                 for src_id, src_tier in self._discover_in_edges(
-                    cur_id, target_tier, mode=in_edge_mode,
+                    cur_id, cur_tier, mode=in_edge_mode,
                 ):
                     if src_id in visit_set:
                         continue
-                    if src_tier != target_tier:
-                        report.orphan_ids.append((src_id, cur_id))
+                    if src_tier != cur_tier:
+                        if follows_cross_tier:
+                            visit_set.add(src_id)
+                            queue.append((src_id, src_tier, depth + 1))
+                        else:
+                            report.orphan_ids.append((src_id, cur_id))
                         continue
                     visit_set.add(src_id)
-                    queue.append((src_id, depth + 1))
+                    queue.append((src_id, src_tier, depth + 1))
 
         # --- Phase 2: best-effort delete (leaves first) ---
-        for cid in reversed(discovered):
+        # Iterate in reverse-discovered order so leaves are deleted
+        # before their parents (less likely to fail on a partial
+        # cleanup). For cross-tier items, dispatch to the originating
+        # store and record in `cross_tier_deleted_ids`.
+        for cid, cid_tier in reversed(discovered):
+            cid_store = self._stores[cid_tier]
             try:
-                target_store.delete(cid)
+                cid_store.delete(cid)
                 report.deleted_ids.append(cid)
+                if cid_tier != target_tier:
+                    report.cross_tier_deleted_ids.append((cid, cid_tier.name))
             except Exception as exc:
                 report.failed_ids.append((cid, repr(exc)))
 

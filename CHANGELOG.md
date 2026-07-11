@@ -59,6 +59,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 42 additional enterprise-grade tests covering edge cases, exception paths, and chaos scenarios
 - Docker and docker-compose support for Redis, Neo4j, and PostgreSQL backends
 
+### Added
+- **`CascadeStrategy.FULL_CASCADE`** — explicit opt-in cross-tier deletion
+  for true GDPR Article 17 "right to be forgotten" semantics.
+  - Existing strategies (ISOLATED / OUTGOING / BIDIRECTIONAL) still treat
+    cross-tier edges as `report.orphan_ids` (recorded, not deleted) — that
+    default is preserved for callers who want audit-without-deletion.
+  - `FULL_CASCADE` follows cross-tier edges, dispatches deletes to the
+    memory's actual tier, and records every cross-tier deletion in a
+    new `report.cross_tier_deleted_ids: List[Tuple[str, str]]` field
+    (id + original tier name) for the audit trail.
+  - Audit log line in `cascade_forget_audit.jsonl` now includes
+    `cross_tier_deleted_count` and `cross_tier_deleted_ids` so an
+    operator can see at a glance whether a cross-tier deletion actually
+    happened (vs. an orphan-only attempt).
+  - 9 new tests in `tests/test_cascade.py::TestFullCascadeStrategy`
+    covering: strategy value, out-edge + in-edge cross-tier deletion,
+    chain across 3 tiers, max_depth cap across tier boundaries, cycle
+    protection in cross-tier traversal, regression guard for
+    BIDIRECTIONAL behavior, audit log shape, `to_dict()` shape.
+- **README honesty fix**: "72% token savings" badge + comparison tables
+  now explicitly note that the headline number is the **LLM-backed**
+  path and the default `HeuristicCompressionEngine` produces ~0%
+  savings (just structures events, no summary). en + zh-CN + zh-TW
+  all updated; CHANGELOG entry for the demo also qualified.
+- Local: 375 → **385 tests pass** (+10), 32 still skipped (server-gated), 0 regressions.
+
 ### Security hardening
 - **`pickle.loads` → `json.loads` for embedding blobs** (R1): `utils/embedding_serde.py`
   new helper. Writes always use JSON (no RCE risk if storage is compromised).

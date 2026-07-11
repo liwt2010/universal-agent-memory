@@ -430,6 +430,201 @@ class TestCrossTierOrphan(unittest.TestCase):
         self.assertIsNotNone(work.retrieve("wrk"))
 
 
+class TestFullCascadeStrategy(unittest.TestCase):
+    """FULL_CASCADE: cross-tier edges are followed and the foreign
+    memory is actually deleted, not just orphaned. This is the
+    "right to be forgotten" path for GDPR Article 17 when a user
+    wants data gone from every storage layer UAMS owns, not just
+    the originating tier.
+    """
+
+    def test_strategy_value(self):
+        from uams.pipeline.cascade import CascadeStrategy
+        self.assertEqual(CascadeStrategy.FULL_CASCADE.value, "full_cascade")
+
+    def test_full_cascade_deletes_cross_tier_out_edge(self):
+        from uams.pipeline.cascade import CascadeForgetter
+        sem = _InMemStore(MemoryType.SEMANTIC)
+        work = _InMemStore(MemoryType.WORKING)
+        sem.store(_make_mem("root", "r",
+                            relations=[{"type": "x", "target_memory_id": "cross"}]))
+        work.store(_make_mem("cross", "c"))
+        stores = {MemoryType.SEMANTIC: sem, MemoryType.WORKING: work}
+        f = CascadeForgetter(stores, UAMSConfig(), CascadeAuditWriter())
+        r = f.forget("root", strategy="full_cascade")
+        # root gone from sem
+        self.assertIn("root", r.deleted_ids)
+        self.assertIsNone(sem.retrieve("root"))
+        # cross gone from work (not just orphaned)
+        self.assertIn("cross", r.deleted_ids)
+        self.assertIsNone(work.retrieve("cross"))
+        # no orphan_ids in this case — the edge was followed, not skipped
+        self.assertEqual(r.orphan_count, 0)
+        # audit trail records the cross-tier deletion
+        self.assertIn(("cross", "WORKING"), r.cross_tier_deleted_ids)
+        self.assertEqual(r.cross_tier_deleted_count, 1)
+
+    def test_full_cascade_deletes_cross_tier_in_edge(self):
+        from uams.pipeline.cascade import CascadeForgetter
+        sem = _InMemStore(MemoryType.SEMANTIC)
+        work = _InMemStore(MemoryType.WORKING)
+        # wrk references root (in sem) — full cascade must chase the
+        # in-edge and delete wrk from WORKING.
+        sem.store(_make_mem("root", "r"))
+        work.store(_make_mem("wrk", "w",
+                             relations=[{"type": "x", "target_memory_id": "root"}]))
+        stores = {MemoryType.SEMANTIC: sem, MemoryType.WORKING: work}
+        f = CascadeForgetter(stores, UAMSConfig(), CascadeAuditWriter())
+        r = f.forget("root", strategy="full_cascade")
+        self.assertIn("root", r.deleted_ids)
+        self.assertIn("wrk", r.deleted_ids)
+        self.assertIsNone(work.retrieve("wrk"))
+        self.assertEqual(r.orphan_count, 0)
+        self.assertIn(("wrk", "WORKING"), r.cross_tier_deleted_ids)
+
+    def test_full_cascade_chain_across_three_tiers(self):
+        """A → B (SEMANTIC), B → C (WORKING), C → D (EPISODIC).
+        Forgetting A in FULL_CASCADE must traverse the whole chain
+        and end up with A, B, C, D all gone from their respective
+        tiers, with a cross_tier_deleted_ids audit trail covering
+        the B/C/D entries (only A is the originating tier)."""
+        from uams.pipeline.cascade import CascadeForgetter
+        sem = _InMemStore(MemoryType.SEMANTIC)
+        work = _InMemStore(MemoryType.WORKING)
+        epi = _InMemStore(MemoryType.EPISODIC)
+        sem.store(_make_mem("A", "a",
+                            relations=[{"type": "x", "target_memory_id": "B"}]))
+        work.store(_make_mem("B", "b",
+                             relations=[{"type": "x", "target_memory_id": "C"}]))
+        epi.store(_make_mem("C", "c",
+                            relations=[{"type": "x", "target_memory_id": "D"}]))
+        epi.store(_make_mem("D", "d"))
+        stores = {
+            MemoryType.SEMANTIC: sem,
+            MemoryType.WORKING: work,
+            MemoryType.EPISODIC: epi,
+        }
+        f = CascadeForgetter(stores, UAMSConfig(), CascadeAuditWriter())
+        r = f.forget("A", strategy="full_cascade")
+        # All four gone
+        for mid, store in [("A", sem), ("B", work), ("C", epi), ("D", epi)]:
+            self.assertIn(mid, r.deleted_ids)
+            self.assertIsNone(store.retrieve(mid))
+        # 3 cross-tier deletions recorded
+        self.assertEqual(r.cross_tier_deleted_count, 3)
+        # No orphans — every edge was followed
+        self.assertEqual(r.orphan_count, 0)
+
+    def test_full_cascade_still_respects_max_depth(self):
+        """Cross-tier traversal still honors the depth cap."""
+        from uams.pipeline.cascade import CascadeForgetter
+        sem = _InMemStore(MemoryType.SEMANTIC)
+        work = _InMemStore(MemoryType.WORKING)
+        # Chain: a(SEM) -> b(SEM) -> c(WORK) -> d(WORK)
+        # With max_depth=1, a+b deleted, c and d must NOT be touched.
+        sem.store(_make_mem("a", "x",
+                            relations=[{"type": "x", "target_memory_id": "b"}]))
+        sem.store(_make_mem("b", "y",
+                            relations=[{"type": "x", "target_memory_id": "c"}]))
+        work.store(_make_mem("c", "z",
+                             relations=[{"type": "x", "target_memory_id": "d"}]))
+        work.store(_make_mem("d", "w"))
+        stores = {MemoryType.SEMANTIC: sem, MemoryType.WORKING: work}
+        f = CascadeForgetter(stores, UAMSConfig(cascade_max_depth=1), CascadeAuditWriter())
+        r = f.forget("a", strategy="full_cascade")
+        self.assertIn("a", r.deleted_ids)
+        self.assertIn("b", r.deleted_ids)
+        # c and d survive — depth cap holds across tiers
+        self.assertNotIn("c", r.deleted_ids)
+        self.assertNotIn("d", r.deleted_ids)
+        self.assertIsNotNone(work.retrieve("c"))
+        self.assertIsNotNone(work.retrieve("d"))
+
+    def test_full_cascade_cycle_protection_still_works(self):
+        """Cross-tier cycle must terminate, not loop forever."""
+        from uams.pipeline.cascade import CascadeForgetter
+        sem = _InMemStore(MemoryType.SEMANTIC)
+        work = _InMemStore(MemoryType.WORKING)
+        # a(SEM) -> b(WORK) -> a(SEM)  (cross-tier cycle)
+        sem.store(_make_mem("a", "x",
+                            relations=[{"type": "x", "target_memory_id": "b"}]))
+        work.store(_make_mem("b", "y",
+                             relations=[{"type": "x", "target_memory_id": "a"}]))
+        stores = {MemoryType.SEMANTIC: sem, MemoryType.WORKING: work}
+        f = CascadeForgetter(stores, UAMSConfig(), CascadeAuditWriter())
+        r = f.forget("a", strategy="full_cascade")
+        self.assertIn("a", r.deleted_ids)
+        self.assertIn("b", r.deleted_ids)
+        self.assertEqual(r.deleted_count, 2)
+
+    def test_bidirectional_does_not_follow_cross_tier(self):
+        """Regression guard: the existing BIDIRECTIONAL behavior must
+        still treat cross-tier edges as orphans (NOT deletions).
+        Otherwise the v4 contract is broken."""
+        from uams.pipeline.cascade import CascadeForgetter
+        sem = _InMemStore(MemoryType.SEMANTIC)
+        work = _InMemStore(MemoryType.WORKING)
+        sem.store(_make_mem("root", "r",
+                            relations=[{"type": "x", "target_memory_id": "cross"}]))
+        work.store(_make_mem("cross", "c"))
+        stores = {MemoryType.SEMANTIC: sem, MemoryType.WORKING: work}
+        f = CascadeForgetter(stores, UAMSConfig(), CascadeAuditWriter())
+        r = f.forget("root", strategy="bidirectional")
+        self.assertIn("root", r.deleted_ids)
+        self.assertIn(("cross", "root"), r.orphan_ids)
+        self.assertNotIn("cross", r.deleted_ids)
+        self.assertIsNotNone(work.retrieve("cross"))
+        # No cross_tier_deleted_ids in non-FULL_CASCADE mode
+        self.assertEqual(r.cross_tier_deleted_count, 0)
+
+    def test_full_cascade_audit_log_records_strategy(self):
+        """The audit line must show strategy='full_cascade' so the
+        operator can see in the trail that a cross-tier deletion
+        actually happened (vs. an orphan-only attempt)."""
+        from uams.pipeline.cascade import CascadeForgetter
+        sem = _InMemStore(MemoryType.SEMANTIC)
+        work = _InMemStore(MemoryType.WORKING)
+        sem.store(_make_mem("root", "r",
+                            relations=[{"type": "x", "target_memory_id": "x"}]))
+        work.store(_make_mem("x", "x"))
+        stores = {MemoryType.SEMANTIC: sem, MemoryType.WORKING: work}
+        # Use a unique path so this test does not collide with the
+        # default `logs/cascade_orphan_log.jsonl` that other tests in
+        # the suite (e.g. TestCrossTierOrphan) populate.
+        tmpdir = tempfile.mkdtemp(prefix="uams-cascade-fullaudit-")
+        audit_path = Path(tmpdir) / "main.jsonl"
+        orphan_path = Path(tmpdir) / "orphan.jsonl"
+        writer = CascadeAuditWriter(audit_path, orphan_path)
+        try:
+            f = CascadeForgetter(stores, UAMSConfig(), writer)
+            f.forget("root", strategy="full_cascade")
+            # The main audit log has the strategy tag
+            line = writer.path.read_text(encoding="utf-8").strip().splitlines()[-1]
+            entry = json.loads(line)
+            self.assertEqual(entry["strategy"], "full_cascade")
+            self.assertEqual(entry["cross_tier_deleted_count"], 1)
+            self.assertEqual(entry["orphan_count"], 0)
+            # No orphan-only lines were written (file may exist but is empty)
+            if orphan_path.exists():
+                self.assertEqual(orphan_path.read_text(encoding="utf-8").strip(), "")
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_full_cascade_to_dict_shape(self):
+        """`CascadeReport.to_dict()` must include the new
+        cross_tier_deleted_ids / cross_tier_deleted_count keys."""
+        from uams.pipeline.cascade import CascadeReport, CascadeStrategy
+        r = CascadeReport(
+            target_id="t", tier=None, strategy=CascadeStrategy.FULL_CASCADE,
+            cross_tier_deleted_ids=[("x", "WORKING"), ("y", "EPISODIC")],
+        )
+        d = r.to_dict()
+        self.assertEqual(d["cross_tier_deleted_count"], 2)
+        self.assertEqual(d["cross_tier_deleted_ids"], [["x", "WORKING"], ["y", "EPISODIC"]])
+        self.assertEqual(d["strategy"], "full_cascade")
+
+
 class _PartialFailureStore(_InMemStore):
     """delete() of "poison" raises RuntimeError."""
     def delete(self, memory_id: str) -> bool:

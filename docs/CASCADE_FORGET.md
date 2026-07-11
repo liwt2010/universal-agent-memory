@@ -21,8 +21,14 @@ u.forget("mem-1", cascade=CascadeStrategy.ISOLATED)
 # Plus out-edge targets (forward-walk within the same tier)
 u.forget("mem-1", cascade=CascadeStrategy.OUTGOING)
 
-# Plus reverse references too (default; GDPR-aligned)
+# Plus reverse references too (default; GDPR-aligned, same-tier only)
 u.forget("mem-1")  # equivalent to cascade=CascadeStrategy.BIDIRECTIONAL
+
+# EXPLICIT OPT-IN: cross-tier deletion too. Required when a user invokes
+# GDPR Article 17 and wants the data gone from every storage layer UAMS
+# owns (not just the originating tier). Cross-tier deletions are still
+# recorded in the audit trail via `report.cross_tier_deleted_ids`.
+u.forget("mem-1", cascade=CascadeStrategy.FULL_CASCADE)
 ```
 
 ## Why
@@ -42,8 +48,15 @@ Two reasons:
    semantic / procedural). If absent, write an audit-only line and
    return.
 2. **BFS discover** all related memories using a `visit_set` (cycle
-   guard) + `max_depth` cap (default 4). Cross-tier edges are
-   recorded as orphans but **never** trigger cross-tier deletion.
+   guard) + `max_depth` cap (default 4). Cross-tier behavior depends
+   on the strategy:
+   - `ISOLATED` / `OUTGOING` / `BIDIRECTIONAL` (default): cross-tier
+     edges are recorded as `report.orphan_ids` and **never** trigger
+     cross-tier deletion.
+   - `FULL_CASCADE` (explicit opt-in only): cross-tier edges are
+     **followed**. The foreign memory is deleted from its own tier
+     and the deletion is recorded in `report.cross_tier_deleted_ids`
+     as `(id, original_tier)` for the GDPR audit trail.
 3. **Best-effort delete** in leaves-first order. Per-memory
    exceptions land in `report.failed_ids`. Other memories in the
    cascade still get deleted.
@@ -136,8 +149,11 @@ v0.1 single-shot delete behavior, pass
 
 ## Out of scope (v0.2)
 
-- cross-tier cascade (explicitly disabled; cross-tier edges are
-  orphans only)
+- ~~cross-tier cascade~~: **added in v0.3** as `CascadeStrategy.FULL_CASCADE`
+  (explicit opt-in). Cross-tier deletions are recorded in
+  `report.cross_tier_deleted_ids` for the audit trail. The default
+  `BIDIRECTIONAL` strategy still treats cross-tier edges as orphans —
+  FULL_CASCADE must be requested explicitly.
 - soft-delete / tombstones (every cascade is a hard delete)
 - 2PC / SAGA across multiple storage backends
 - Async API mirrors (`AsyncUniversalMemorySystem.forget`)
