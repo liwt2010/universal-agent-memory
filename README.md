@@ -3,7 +3,7 @@
   <img src="https://img.shields.io/badge/python-3.9%2B-blue.svg" alt="Python 3.9+">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT">
   <img src="https://img.shields.io/badge/tests-375%20passing-brightgreen.svg" alt="375 Tests Passing">
-  <img src="https://img.shields.io/badge/token%20compression-72%25%20savings-success.svg" alt="Token Compression 72% Savings">
+  <img src="https://img.shields.io/badge/token%20compression-72%25%20LLM%20mode-orange.svg" alt="Token Compression: 72% with LLM mode (default heuristic ≈ 0%)">
   <img src="https://img.shields.io/badge/embeddings-pluggable-blueviolet.svg" alt="Pluggable Embeddings">
   <img src="https://img.shields.io/badge/backends-6%20storage%20engines-blueviolet.svg" alt="6 Storage Backends">
   <img src="https://img.shields.io/badge/cascade-GDPR%2Daligned-success.svg" alt="Cascade Forget (GDPR)">
@@ -247,6 +247,8 @@ UAMS exposes **7 universal primitives** that replace the 53+ coding-specific too
 ---
 
 ## 🧠 LLM Compression (optional)
+
+> **Default = `HeuristicCompressionEngine` ≈ 0% token savings.** UAMS ships with the heuristic engine so the system runs out of the box without any LLM dependency; the heuristic just structures events (`[TYPE] content\n...`) and does **not** summarize. The 72% headline number below is the **LLM-backed path**, which you opt into via env vars.
 
 Off by default — UAMS ships with a **heuristic compression engine** so it runs without an LLM dependency. Opt in to **LLM-backed compression** for real token savings on long sessions.
 
@@ -520,12 +522,14 @@ python examples/multi_agent.py
 
 ### Token Compression (LLM vs Heuristic)
 
+> **Default = `HeuristicCompressionEngine` (≈ 0% savings).** The 72% headline is the **LLM-backed path**, opt-in only.
+
 Measured on a realistic 20-event agent session (`examples/_token_compression_demo.py`):
 
 | Engine | Episodic tokens | % of raw | Notes |
 |--------|----------------|----------|-------|
 | Raw concatenation | 300 | 100% | No compression |
-| HeuristicCompressionEngine | 300 | 100% | Just structures events, no summary |
+| **HeuristicCompressionEngine** (default) | **300** | **100%** | **Just structures events, no summary → ≈ 0% savings** |
 | **LLMCompressionEngine** | **84** | **28%** | **72% savings**, bounded ~200 words |
 
 LLM-backed output token count is bounded (~200 words), so it stays roughly **O(1) in session length** — the bigger the session, the bigger the relative savings.

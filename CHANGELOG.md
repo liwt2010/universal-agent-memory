@@ -38,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Maintainer / response SLA**: `pyproject.toml` authors + `SECURITY.md` contact + `README.md` Maintenance & Support section (security 48h ack, bugs 7d, features 14d)
 - **143 new tests** (105 → 248 total) covering config validation, LLM compression, embedding providers, query rewriting, Redis cache, hierarchical filter
 - **`docs/PR1-2-LLM-Compression.md`** handoff document for the LLM compression design
-- **`examples/_token_compression_demo.py`** benchmark demonstrating 72% token savings (20-event session: 300 → 84 tokens)
+- **`examples/_token_compression_demo.py`** benchmark demonstrating 72% token savings with `LLMCompressionEngine` (20-event session: 300 → 84 tokens). The default `HeuristicCompressionEngine` produces ≈ 0% savings (just structures events, no summary). Opt in via `UAMS_LLM_ENABLED=true` + `UAMS_LLM_API_KEY` + `UAMS_LLM_BASE_URL` + `UAMS_LLM_MODEL`.
 
 ### Token Compression Suite (5 PRs, commit `a614389..1141398`)
 - **PR1 — Retrieval relevance density (`a614389`)**: pack memories by `score/tokens` instead of pure count; high-signal short memories beat low-signal long ones

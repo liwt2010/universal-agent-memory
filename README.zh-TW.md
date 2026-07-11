@@ -228,6 +228,8 @@ UAMS 以人類認知架構為藍本建模記憶。每一層擁有獨立的儲存
 
 ## 🧠 LLM 壓縮(可選)
 
+> **預設 = `HeuristicCompressionEngine` ≈ 0% token 節省。** UAMS 內建啟發式引擎,開箱即用不依賴 LLM;啟發式只做事件結構化 (`[TYPE] content\n...`),**不做摘要**。下面 72% 標題是 **LLM 模式** 的數字,透過環境變數顯式 opt-in。
+
 預設關閉 —— UAMS 內建 **啟發式壓縮引擎**,無需 LLM 依賴即可執行。啟用 **LLM 壓縮** 可在長會話場景獲得真實 token 節省。
 
 ```bash
@@ -260,8 +262,8 @@ export UAMS_LLM_MODEL=llama3.1
 **實測節省**(20 事件會話):
 
 ```
-啟發式:  300 tokens  (原始 100%)
-LLM:      84 tokens  (原始  28%)  → 72% 節省
+啟發式 (預設):  300 tokens  (原始 100%,≈ 0% 節省,僅做結構化)
+LLM (opt-in):    84 tokens  (原始  28%)  → 72% 節省
 ```
 
 如果 LLM 呼叫失敗(網路/配額/逾時),UAMS **自動降級**到啟發式壓縮,agent 主迴圈不會卡住。詳見 [docs/PR1-2-LLM-Compression.md](docs/PR1-2-LLM-Compression.md)。
