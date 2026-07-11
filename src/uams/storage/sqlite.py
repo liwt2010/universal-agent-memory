@@ -10,11 +10,11 @@ import json
 import sqlite3
 import threading
 from queue import Queue
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from uams.storage.base import MemoryStore
 from uams.core.models import Memory, MemoryId, TemporalAnchor, AgentContext, MemoryPayload, MemoryMetadata, Relation
-from uams.core.enums import MemoryType, PrivacyLevel, EventType
+from uams.core.enums import MemoryType, PrivacyLevel
 from uams.utils.logging import get_logger
 from uams.utils.embedding_serde import serialize_embedding, deserialize_embedding
 
@@ -31,7 +31,9 @@ class SQLiteStore(MemoryStore):
     All writes are atomic transactions.
     """
 
-    def __init__(self, db_path: str = "uams.db", tier_name: str = "memory", pool_size: int = 5):
+    def __init__(self, db_path: str = "uams.db", tier_name: str = "memory", pool_size: int = 8):
+        # Default pool_size=8 to support 1 serialized writer + multiple concurrent readers
+        # (WAL mode serializes writes, so 5 was tight under 4+ concurrent write threads).
         self._db_path = db_path
         self._tier_name = tier_name
         self._pool_size = pool_size
@@ -52,6 +54,9 @@ class SQLiteStore(MemoryStore):
         conn = sqlite3.connect(self._db_path, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
+        # busy_timeout=5000: SQLite retries up to 5s on SQLITE_BUSY before raising.
+        # Belt-and-suspenders alongside write-side RLock below.
+        conn.execute("PRAGMA busy_timeout=5000")
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
@@ -258,24 +263,29 @@ class SQLiteStore(MemoryStore):
         )
 
     def store(self, memory: Memory) -> None:
-        conn = self._get_connection()
-        try:
-            conn.execute("BEGIN")
-            conn.execute(f"""
-                INSERT OR REPLACE INTO {self._tier_name}_memories
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, self._memory_to_row(memory))
-            conn.commit()
-            logger.debug("SQLite stored memory %s in tier %s", memory.id, self._tier_name)
-        except Exception:
-            logger.exception("SQLite store failed for memory %s", memory.id)
+        # Serialize writes: WAL mode serializes writes anyway, and without this
+        # multiple writer threads see SQLITE_BUSY + busy_timeout retries. The
+        # RLock turns "concurrent + slow retries" into "serialized + fast".
+        # Reads (retrieve/search/list) stay concurrent — they use a different conn.
+        with self._lock:
+            conn = self._get_connection()
             try:
-                conn.rollback()
+                conn.execute("BEGIN")
+                conn.execute(f"""
+                    INSERT OR REPLACE INTO {self._tier_name}_memories
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, self._memory_to_row(memory))
+                conn.commit()
+                logger.debug("SQLite stored memory %s in tier %s", memory.id, self._tier_name)
             except Exception:
-                pass
-            raise
-        finally:
-            self._return_connection(conn)
+                logger.exception("SQLite store failed for memory %s", memory.id)
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise
+            finally:
+                self._return_connection(conn)
 
     def retrieve(self, memory_id: str) -> Optional[Memory]:
         conn = self._get_connection()
@@ -306,37 +316,41 @@ class SQLiteStore(MemoryStore):
             self._return_connection(conn)
 
     def delete(self, memory_id: str) -> bool:
-        conn = self._get_connection()
-        try:
-            conn.execute("BEGIN")
-            cursor = conn.execute(
-                f"DELETE FROM {self._tier_name}_memories WHERE id = ?",
-                (memory_id,)
-            )
-            conn.commit()
-            return cursor.rowcount > 0
-        except Exception:
-            logger.exception("SQLite delete failed for %s", memory_id)
+        with self._lock:
+            conn = self._get_connection()
             try:
-                conn.rollback()
+                conn.execute("BEGIN")
+                cursor = conn.execute(
+                    f"DELETE FROM {self._tier_name}_memories WHERE id = ?",
+                    (memory_id,)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
             except Exception:
-                pass
-            return False
-        finally:
-            self._return_connection(conn)
+                logger.exception("SQLite delete failed for %s", memory_id)
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return False
+            finally:
+                self._return_connection(conn)
 
     def search_keywords(self, query: str, k: int = 10) -> List[Memory]:
         """FTS5 full-text search."""
         conn = self._get_connection()
         try:
-            # Use FTS5 match query
+            # FTS5 treats '-' as NOT operator and other characters as syntax.
+            # We treat the user query as a literal phrase so 'state-of-the-art'
+            # searches for the literal string, not 'state AND NOT of AND NOT ...'.
+            fts_query = self._sanitize_fts5_query(query)
             cursor = conn.execute(f"""
                 SELECT m.* FROM {self._tier_name}_memories m
                 JOIN {self._tier_name}_fts f ON m.id = f.id
                 WHERE {self._tier_name}_fts MATCH ?
                 ORDER BY rank
                 LIMIT ?
-            """, (query, k))
+            """, (fts_query, k))
             rows = cursor.fetchall()
             return [self._row_to_memory(row) for row in rows]
         except Exception:
@@ -355,6 +369,21 @@ class SQLiteStore(MemoryStore):
                 return []
         finally:
             self._return_connection(conn)
+
+    @staticmethod
+    def _sanitize_fts5_query(query: str) -> str:
+        """Wrap user query as an FTS5 phrase to avoid operator parsing.
+
+        FTS5 syntax treats '-' as NOT, '*' as prefix, ':' as column filter, etc.
+        A literal phrase ("...") tells FTS5 to match the exact token sequence,
+        which is what users almost always want from `search_keywords()`.
+
+        Embedded double quotes are escaped by doubling them (FTS5 convention).
+        """
+        if not query:
+            return '""'
+        escaped = query.replace('"', '""')
+        return f'"{escaped}"'
 
     def search_vector(
         self, vector: List[float], k: int = 10, **filters: Any
@@ -397,27 +426,28 @@ class SQLiteStore(MemoryStore):
             self._return_connection(conn)
 
     def delete_expired(self) -> int:
-        conn = self._get_connection()
-        try:
-            conn.execute("BEGIN")
-            now = TemporalAnchor().created_at
-            cursor = conn.execute(f"""
-                DELETE FROM {self._tier_name}_memories
-                WHERE expires_at IS NOT NULL AND expires_at < ?
-            """, (now,))
-            conn.commit()
-            count = cursor.rowcount
-            logger.debug("Deleted %d expired memories from %s", count, self._tier_name)
-            return count
-        except Exception:
-            logger.exception("delete_expired failed")
+        with self._lock:
+            conn = self._get_connection()
             try:
-                conn.rollback()
+                conn.execute("BEGIN")
+                now = TemporalAnchor().created_at
+                cursor = conn.execute(f"""
+                    DELETE FROM {self._tier_name}_memories
+                    WHERE expires_at IS NOT NULL AND expires_at < ?
+                """, (now,))
+                conn.commit()
+                count = cursor.rowcount
+                logger.debug("Deleted %d expired memories from %s", count, self._tier_name)
+                return count
             except Exception:
-                pass
-            return 0
-        finally:
-            self._return_connection(conn)
+                logger.exception("delete_expired failed")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return 0
+            finally:
+                self._return_connection(conn)
 
     def close(self) -> None:
         """Close all connections in the pool."""

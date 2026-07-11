@@ -203,6 +203,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Test failures caused by sanitize_all ordering and HTML entity semicolons
 - Missing `importance`/`confidence` fields in restore_from_dict test data
 - Graceful degradation for Redis and Neo4j when dependencies are not installed
+- **SQLite pool_size 5 starved under 4+ concurrent write threads** (WAL mode serializes writes, so the pool got contended and `busy_timeout` retries slowed everything down). Fixed: `pool_size` default 5 → 8, `store()` / `delete()` / `delete_expired()` wrapped in `RLock` (writes serialized, reads stay concurrent), and `PRAGMA busy_timeout=5000` as belt-and-suspenders. 3 new tests in `tests/test_sqlite_concurrency_and_fts5.py` (4-thread × 50 writes, 8-thread × 20 writes, mixed read/write).
+- **FTS5 `MATCH` parsed `-` as NOT operator**, so `search_keywords('state-of-the-art')` returned empty (parsed as `state AND NOT of AND NOT the AND NOT art`). Fixed: new `SQLiteStore._sanitize_fts5_query()` wraps the user query as an FTS5 phrase (`"..."`), with embedded `"` escaped by doubling. 6 new tests covering hyphen / asterisk / embedded quotes / single-word regression / multi-word phrase / unit test of the helper.
 
 ## [0.1.0] - 2024-XX-XX
 

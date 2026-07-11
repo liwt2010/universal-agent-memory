@@ -104,7 +104,9 @@ class UAMSConfig:
     sqlite_path: str = "uams.db"
 
     # --- SQLite Connection Pool ---
-    sqlite_pool_size: int = 5
+    # Default 8: WAL mode serializes writes (RLock-protected), so 1 writer + N readers
+    # share the pool. 5 was tight under 4+ concurrent write threads.
+    sqlite_pool_size: int = 8
 
     # --- Connection / Timeouts ---
     connection_timeout_seconds: float = 5.0
