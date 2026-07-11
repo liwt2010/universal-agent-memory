@@ -159,22 +159,19 @@ jobs:
           done
           pytest tests/test_neo4j_store_real.py -v --tb=short
 
-  stress-test-real-deps:
-    name: Stress test with real ${{ matrix.backend }} backend
+  stress-postgresql:
+    name: Stress test with real postgresql backend
     runs-on: ubuntu-latest
-    # 100k stress test, A+ requirement. Each backend runs the stress
-    # test against its real service container with concurrent workers.
-    # The JSON report is uploaded as an artifact for trend tracking.
+    # 100k stress test, A+ requirement. Split from a 4-backend matrix
+    # into 4 independent jobs so each only declares its own service
+    # container (the matrix pattern declared all 3, which wasted
+    # resources and could fail the whole job if any service failed to
+    # start on a busy runner).
     # The job is INFORMATIONAL by default (continue-on-error: true)
     # because real-world backends can flake at high concurrency; a
     # human reviews the artifact. Switch to continue-on-error: false
     # once the baseline numbers are stable.
     continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        backend: [postgresql, chromadb, redis, neo4j]
-
     services:
       postgres:
         image: postgres:15-alpine
@@ -189,47 +186,18 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
-
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-
-      neo4j:
-        image: neo4j:5-community
-        env:
-          NEO4J_ACCEPT_LICENSE_AGREEMENT: "yes"
-          NEO4J_AUTH: neo4j/testpass
-          NEO4J_PLUGS: "[]"
-        ports:
-          - 7687:7687
-        options: >-
-          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 30
-
     steps:
       - uses: actions/checkout@v7
-
       - name: Set up Python 3.12
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e .
           pip install -e ".[all]"
-
       - name: "PostgreSQL stress: wait + run"
-        if: matrix.backend == 'postgresql'
         env:
           UAMS_TEST_PG_HOST: 127.0.0.1
           UAMS_TEST_PG_PORT: 5432
@@ -249,17 +217,70 @@ jobs:
             --timeout 1800 --output stress_report_postgresql.json
           # Print a one-line summary for the job log
           python -c "import json; r=json.load(open('stress_report_postgresql.json')); print(f'[stress postgresql] {r[\"ops_per_sec\"]:.1f} ops/sec err={r[\"error_rate\"]:.2%} p95={r[\"p95_ms\"]:.1f}ms rss+{r[\"rss_growth_mb\"]:.1f}MB')"
+      - name: Upload stress report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stress-report-postgresql
+          path: stress_report_postgresql.json
+          if-no-files-found: warn
 
+  stress-chromadb:
+    name: Stress test with real chromadb backend
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    # No service container: ChromaDB uses in-process EphemeralClient.
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install -e ".[all]"
       - name: "ChromaDB stress: run (in-process EphemeralClient)"
-        if: matrix.backend == 'chromadb'
         run: |
           python -m benchmarks.stress_test \
             --backend chromadb --ops 100000 --concurrency 32 \
             --timeout 1800 --output stress_report_chromadb.json
           python -c "import json; r=json.load(open('stress_report_chromadb.json')); print(f'[stress chromadb] {r[\"ops_per_sec\"]:.1f} ops/sec err={r[\"error_rate\"]:.2%} p95={r[\"p95_ms\"]:.1f}ms rss+{r[\"rss_growth_mb\"]:.1f}MB')"
+      - name: Upload stress report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stress-report-chromadb
+          path: stress_report_chromadb.json
+          if-no-files-found: warn
 
+  stress-redis:
+    name: Stress test with real redis backend
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install -e ".[all]"
       - name: "Redis stress: wait + run"
-        if: matrix.backend == 'redis'
         env:
           UAMS_TEST_REDIS_HOST: 127.0.0.1
           UAMS_TEST_REDIS_PORT: 6379
@@ -272,9 +293,44 @@ jobs:
             --backend redis --ops 100000 --concurrency 32 \
             --timeout 1800 --output stress_report_redis.json
           python -c "import json; r=json.load(open('stress_report_redis.json')); print(f'[stress redis] {r[\"ops_per_sec\"]:.1f} ops/sec err={r[\"error_rate\"]:.2%} p95={r[\"p95_ms\"]:.1f}ms rss+{r[\"rss_growth_mb\"]:.1f}MB')"
+      - name: Upload stress report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stress-report-redis
+          path: stress_report_redis.json
+          if-no-files-found: warn
 
+  stress-neo4j:
+    name: Stress test with real neo4j backend
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    services:
+      neo4j:
+        image: neo4j:5-community
+        env:
+          NEO4J_ACCEPT_LICENSE_AGREEMENT: "yes"
+          NEO4J_AUTH: neo4j/testpass
+          NEO4J_PLUGINS: "[]"
+        ports:
+          - 7687:7687
+        options: >-
+          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install -e ".[all]"
       - name: "Neo4j stress: wait + run"
-        if: matrix.backend == 'neo4j'
         env:
           UAMS_TEST_NEO4J_URI: bolt://127.0.0.1:7687
           UAMS_TEST_NEO4J_USER: neo4j
@@ -292,13 +348,12 @@ jobs:
             --backend neo4j --ops 100000 --concurrency 32 \
             --timeout 1800 --output stress_report_neo4j.json
           python -c "import json; r=json.load(open('stress_report_neo4j.json')); print(f'[stress neo4j] {r[\"ops_per_sec\"]:.1f} ops/sec err={r[\"error_rate\"]:.2%} p95={r[\"p95_ms\"]:.1f}ms rss+{r[\"rss_growth_mb\"]:.1f}MB')"
-
       - name: Upload stress report artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: stress-report-${{ matrix.backend }}
-          path: stress_report_${{ matrix.backend }}.json
+          name: stress-report-neo4j
+          path: stress_report_neo4j.json
           if-no-files-found: warn
 
   integration:
