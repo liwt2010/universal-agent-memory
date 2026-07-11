@@ -37,7 +37,7 @@ from uams.pipeline.cascade import (
     CascadeReport,
     CascadeStrategy,
 )
-from typing import Optional, Union
+from typing import Optional, Tuple, Union
 
 logger = get_logger(__name__)
 
@@ -514,10 +514,50 @@ class UniversalMemorySystem(EventHandler):
         """
         Explicitly save a fact/preference/pattern to semantic memory.
         Returns MemoryId on success, None on failure (graceful degradation).
+
+        When ``UAMSConfig.remember_dedup_enabled`` is True and an
+        embedding function is available, the SEMANTIC store is searched
+        first; if an existing memory has cosine similarity >=
+        ``remember_dedup_threshold`` to the new fact, that existing
+        MemoryId is returned and the new fact is NOT stored. This
+        prevents semantic noise like storing both "I like vegetables"
+        and "I'm vegetarian" as separate memories. Dedup is opt-in
+        because it requires the embedding function; without it,
+        remember() always stores.
         """
         try:
             truncated_fact = self._truncate_raw(fact)
             safe_fact = InputValidator.sanitize_all(truncated_fact, max_length=self._config.max_raw_length)
+
+            # --- Embedding (also reused for dedup) ---
+            embedding: Optional[List[float]] = None
+            if self._embedding_fn:
+                try:
+                    embedding = self._embedding_fn(truncated_fact)
+                except Exception:
+                    logger.exception("Embedding failed for fact '%s...'. Storing without embedding.", truncated_fact[:50])
+                    embedding = None
+
+            # --- Optional dedup (opt-in, requires embedding) ---
+            if self._config.remember_dedup_enabled:
+                if embedding is None:
+                    logger.debug(
+                        "remember_dedup_enabled=True but no embedding available; "
+                        "storing new fact without dedup check."
+                    )
+                else:
+                    existing, sim = self._find_dedup_match(
+                        embedding, self._config.remember_dedup_threshold,
+                    )
+                    if existing is not None:
+                        logger.info(
+                            "remember() dedup hit: returning existing memory %s "
+                            "(new fact '%s...' is %.3f similar, threshold=%.2f)",
+                            existing.id, safe_fact[:50], sim,
+                            self._config.remember_dedup_threshold,
+                        )
+                        return existing.id
+
             mem = Memory(
                 id=MemoryId(),
                 anchor=TemporalAnchor(),
@@ -525,6 +565,7 @@ class UniversalMemorySystem(EventHandler):
                 payload=MemoryPayload(
                     raw=safe_fact,
                     structured={"explicit": True, "category": category},
+                    embedding=embedding,
                 ),
                 metadata=MemoryMetadata(
                     memory_type=MemoryType.SEMANTIC,
@@ -533,13 +574,6 @@ class UniversalMemorySystem(EventHandler):
                     categories={category} | (tags or set()),
                 ),
             )
-
-            if self._embedding_fn:
-                try:
-                    mem.payload.embedding = self._embedding_fn(truncated_fact)
-                except Exception:
-                    logger.exception("Embedding failed for fact '%s...'. Storing without embedding.", truncated_fact[:50])
-                    # Continue without embedding - BM25 fallback still works
 
             self._stores[MemoryType.SEMANTIC].store(mem)
             logger.info(
@@ -550,6 +584,56 @@ class UniversalMemorySystem(EventHandler):
         except Exception:
             logger.exception("remember() failed. Fact not stored.")
             return None
+
+    def _find_dedup_match(
+        self,
+        embedding: List[float],
+        threshold: float,
+    ) -> Tuple[Optional["Memory"], float]:
+        """Search SEMANTIC store for an existing memory with cosine sim
+        >= threshold to ``embedding``.
+
+        Returns ``(memory, similarity)`` for the best match above the
+        threshold, or ``(None, 0.0)`` if nothing qualifies. Failures
+        are caught and logged so dedup never breaks a remember() call.
+        """
+        sem_store = self._stores.get(MemoryType.SEMANTIC)
+        if sem_store is None:
+            return None, 0.0
+        try:
+            candidates = sem_store.search_vector(embedding, k=5)
+        except Exception:
+            logger.exception("Dedup search_vector failed; treating as no-match")
+            return None, 0.0
+        best: Optional[Memory] = None
+        best_sim = 0.0
+        for mem in candidates:
+            existing_emb = mem.payload.embedding
+            if not existing_emb or len(existing_emb) != len(embedding):
+                continue
+            sim = self._cosine_similarity(embedding, existing_emb)
+            if sim > best_sim:
+                best_sim = sim
+                best = mem
+        if best is not None and best_sim >= threshold:
+            return best, best_sim
+        return None, 0.0
+
+    @staticmethod
+    def _cosine_similarity(a: List[float], b: List[float]) -> float:
+        """Plain-Python cosine similarity (no numpy dependency)."""
+        if not a or not b or len(a) != len(b):
+            return 0.0
+        dot = 0.0
+        na = 0.0
+        nb = 0.0
+        for x, y in zip(a, b):
+            dot += x * y
+            na += x * x
+            nb += y * y
+        if na == 0.0 or nb == 0.0:
+            return 0.0
+        return dot / ((na ** 0.5) * (nb ** 0.5))
 
     def recall(
         self,

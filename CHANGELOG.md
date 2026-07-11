@@ -85,6 +85,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   all updated; CHANGELOG entry for the demo also qualified.
 - Local: 375 → **385 tests pass** (+10), 32 still skipped (server-gated), 0 regressions.
 
+### Added
+- **`remember()` semantic dedup (opt-in)**: when
+  `UAMSConfig.remember_dedup_enabled=True` and an embedding function
+  is available, `remember()` searches the SEMANTIC store for an
+  existing memory with cosine similarity ≥
+  `remember_dedup_threshold` (default 0.95) and returns the existing
+  `MemoryId` instead of storing a new one. Prevents semantic noise
+  like "I like vegetables" + "I'm vegetarian" coexisting as
+  separate memories. Falls back to "always store" with a debug log
+  when no embedding is available. 7 new tests in
+  `tests/test_remember_dedup.py` covering: default-off behavior,
+  dedup hit returns existing id, below-threshold stores new,
+  no-embedding fallback, embedding-failure fallback, threshold
+  boundary, three-duplicates-only-one-stored.
+- **Per-category half-life overrides (opt-in)**: new
+  `UAMSConfig.category_half_life_overrides: Dict[str, Optional[float]]`
+  (empty by default) lets operators replace a tier's default
+  half-life for memories in a specific category. `None` value means
+  "never forget" (sentinel half-life 10k years, retention ≈ 1.0
+  forever). The first matching key in the override dict (in
+  insertion order) wins, so the operator's config precedence is
+  honored. When an override applies, the engine uses
+  floor=0.1 (forget after ~3-4 halflives) instead of the tier's
+  stickiness floor, because the operator picked a specific rate
+  for a reason. **Empty by default and MUST be populated from
+  observed traffic** — see `docs/HALF_LIFE_TUNING.md` for the
+  calibration methodology. 10 new tests in
+  `tests/test_category_half_life.py` covering: tier default when
+  no override, `None` = never forget, numeric override replaces
+  half-life, first-match-wins precedence, unknown category
+  falls back to tier, override bypasses tier stickiness, full
+  `should_forget` consistency, importance/confidence interaction,
+  back-compat with the original tier-default behavior.
+- **`docs/HALF_LIFE_TUNING.md`**: full calibration methodology.
+  Why calibration matters, the two failure modes of "wrong"
+  half-lives, instrumentation-first workflow, 90th-percentile
+  access-age approach, A/B testing the floor, "long tail"
+  category hygiene, and what this is NOT (hard-delete policy,
+  per-user, auto-tuned).
+- Local: 385 → **402 tests pass** (+17), 32 still skipped (server-gated), 0 regressions.
+
 ### Security hardening
 - **`pickle.loads` → `json.loads` for embedding blobs** (R1): `utils/embedding_serde.py`
   new helper. Writes always use JSON (no RCE risk if storage is compromised).

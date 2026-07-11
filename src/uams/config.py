@@ -15,7 +15,7 @@ Production-Safety:
 """
 
 from dataclasses import dataclass
-from typing import List, Literal, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 import os
 
 
@@ -56,8 +56,33 @@ class UAMSConfig:
     semantic_half_life_seconds: float = 90 * 24 * 3600  # 90 days
     procedural_half_life_seconds: float = 365 * 24 * 3600  # 1 year
 
+    # --- Per-category half-life overrides (opt-in) ---
+    # Maps category string -> half-life in seconds. A value of None
+    # means "never forget" (e.g. birthdays, legal name).
+    #
+    # IMPORTANT: This dict is empty by default and MUST be populated
+    # from observed traffic. The framework cannot guess "birthday" vs
+    # "short-term preference" without real data — see
+    # docs/HALF_LIFE_TUNING.md for the calibration methodology.
+    #
+    # When a memory has multiple categories, the FIRST matching key
+    # wins (preserves a deterministic, non-additive behavior).
+    category_half_life_overrides: Optional[Dict[str, Optional[float]]] = None
+
     # --- Deduplication ---
     dedup_window_seconds: float = 300.0
+
+    # --- Semantic-dedup on remember() (opt-in) ---
+    # When True, remember() will search the SEMANTIC store for an
+    # existing memory whose embedding is >= remember_dedup_threshold
+    # cosine-similar to the new fact. If found, the new memory is
+    # NOT stored (avoiding noise like "I like vegetables" + "I'm
+    # vegetarian") and the existing MemoryId is returned instead.
+    # Requires an embedding function (UAMSConfig.llm_enabled +
+    # UAMSConfig.embedding_*). Falls back to "always store" if no
+    # embedding is available, with a one-line debug log.
+    remember_dedup_enabled: bool = False
+    remember_dedup_threshold: float = 0.95  # cosine similarity, 0..1
 
     # --- Retrieval ---
     rrf_k: int = 60
@@ -250,7 +275,14 @@ class UAMSConfig:
             episodic_half_life_seconds=cls._env_float("UAMS_EPISODIC_HALFLIFE", 7 * 24 * 3600),
             semantic_half_life_seconds=cls._env_float("UAMS_SEMANTIC_HALFLIFE", 90 * 24 * 3600),
             procedural_half_life_seconds=cls._env_float("UAMS_PROCEDURAL_HALFLIFE", 365 * 24 * 3600),
+            # category_half_life_overrides intentionally NOT exposed via
+            # a single env var — it's a per-category dict. Operators who
+            # want to set it from env should construct the config in
+            # Python (e.g. via uams.config.UAMSConfig.from_dict). See
+            # docs/HALF_LIFE_TUNING.md.
             dedup_window_seconds=cls._env_float("UAMS_DEDUP_WINDOW", 300.0),
+            remember_dedup_enabled=cls._env_bool("UAMS_REMEMBER_DEDUP", False),
+            remember_dedup_threshold=cls._env_float("UAMS_REMEMBER_DEDUP_THRESHOLD", 0.95),
             rrf_k=cls._env_int("UAMS_RRF_K", 60),
             max_results_per_session=cls._env_int("UAMS_MAX_PER_SESSION", 3),
             default_token_budget=cls._env_int("UAMS_DEFAULT_BUDGET", 2000),
