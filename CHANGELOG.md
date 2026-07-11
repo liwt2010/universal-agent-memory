@@ -59,6 +59,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 42 additional enterprise-grade tests covering edge cases, exception paths, and chaos scenarios
 - Docker and docker-compose support for Redis, Neo4j, and PostgreSQL backends
 
+### Security hardening
+- **`pickle.loads` → `json.loads` for embedding blobs** (R1): `utils/embedding_serde.py`
+  new helper. Writes always use JSON (no RCE risk if storage is compromised).
+  Reads prefer JSON; legacy pickle-encoded blobs are still readable with a
+  logged warning, so existing data is not orphaned. A future migration
+  script can rewrite the storage and `pickle` will be dropped entirely.
+  Affected: `storage/{postgresql,sqlite,redis}.py` (3 sites).
+  11 new tests in `tests/test_embedding_serde.py`.
+- **`BackupManager.backup_to_file` / `restore_from_file` distinguish failure from empty** (R2):
+  return `None` on fatal failure (vs `0` for legitimate "no data"), and
+  log the exception at `ERROR` level. 4 new tests in
+  `tests/test_backup_failure_semantics.py`.
+- **`MultiAgentCoordinator` auto-disables on Redis failure** (R3): previously
+  a Redis error silently fell back to in-memory locking, which is unsafe in
+  the multi-process deployment that motivated the Redis choice. Now the
+  coordinator marks itself `disabled` on first Redis error, future
+  `acquire_lease` / `release_lease` short-circuit to `None` / `False` and
+  log a clear "auto-disabling" message. Other workers are unaffected
+  because each has its own coordinator instance.
+  7 new tests in `tests/test_coordinator_auto_disable.py`.
+- **Local: 353 → 375 tests pass** (+22), 32 still skipped (server-gated), 0 regressions.
+- **Ruff S-rule audit**: 44 → 41 errors. 3 real risks fixed above; remaining 41
+  are documented false positives (column-name SQL interpolation, cleanup-path
+  `except: pass`, `random` in benchmarks, K8s health-server bind, config-default
+  passwords behind production validation, intentional cascade `except: continue`).
+  Fallback `pickle.loads` paths marked with explicit `# noqa: S301` for clarity.
+
 ### Fixed
 - Memory leaks in MetricsCollector via circular buffer aggregation
 - Infinite loop in MigrationTool when using InMemoryStore as source

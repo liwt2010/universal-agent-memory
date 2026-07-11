@@ -70,6 +70,29 @@ class MultiAgentCoordinator:
         self._agent_scopes: Dict[str, Set[str]] = defaultdict(set)
         self._lock = threading.RLock()
         self._redis_client = redis_client  # Optional: Redis for distributed locks
+        # Set to True the first time a Redis call raises. Once disabled,
+        # lease methods short-circuit to None/False because in-memory
+        # locking is meaningless in a multi-process deployment (which is
+        # exactly why Redis was chosen). Other workers are unaffected
+        # because each has its own MultiAgentCoordinator instance.
+        self._disabled = False
+
+    @property
+    def is_disabled(self) -> bool:
+        """True if a Redis call has failed and the coordinator dropped
+        the distributed-coordination role for this process."""
+        return self._disabled
+
+    def _disable(self, reason: Exception) -> None:
+        """Mark this coordinator instance as disabled after a Redis error."""
+        if not self._disabled:
+            logger.error(
+                "MultiAgentCoordinator auto-disabling: distributed lock "
+                "unavailable (%s: %s). Lease acquire/release will return "
+                "None/False for this process. Other workers are unaffected.",
+                type(reason).__name__, reason,
+            )
+            self._disabled = True
 
     def acquire_lease(
         self,
@@ -82,8 +105,20 @@ class MultiAgentCoordinator:
         Attempt to acquire an exclusive lease on a resource.
         Thread-safe. If redis_client is available, uses Redis distributed lock.
 
-        Returns Lease if acquired, None if already locked by another agent.
+        Returns Lease if acquired, None if already locked by another agent
+        or if the coordinator has been auto-disabled.
         """
+        # If a previous Redis call failed, we cannot safely coordinate
+        # across processes. Refuse instead of silently degrading to
+        # in-memory locks (which would mislead the caller into thinking
+        # their multi-process lease was held).
+        if self._disabled:
+            logger.warning(
+                "acquire_lease(%s, %s) skipped: coordinator is disabled",
+                agent_id, resource,
+            )
+            return None
+
         # Try Redis distributed lock first (multi-process safe)
         if self._redis_client and self._redis_client._available:
             try:
@@ -103,10 +138,13 @@ class MultiAgentCoordinator:
                     agent_id, resource
                 )
                 return None
-            except Exception:
-                logger.exception("Redis distributed lock failed, falling back to in-memory lock")
-        
-        # Fallback to in-memory lock (single-process only)
+            except Exception as exc:
+                self._disable(exc)
+                return None
+
+        # No Redis available: use in-memory lock (single-process only).
+        # We do NOT auto-disable on this path because the user opted in
+        # to in-memory mode by not providing a Redis client.
         with self._lock:
             # Clean expired leases
             self._leases = {
@@ -129,7 +167,19 @@ class MultiAgentCoordinator:
             return new_lease
 
     def release_lease(self, agent_id: str, resource: str) -> bool:
-        """Release a lease if held by this agent."""
+        """Release a lease if held by this agent.
+
+        Returns False (without contacting Redis) if the coordinator is
+        disabled — the caller can detect that the distributed lease
+        was not actually released and decide whether to retry or alert.
+        """
+        if self._disabled:
+            logger.warning(
+                "release_lease(%s, %s) skipped: coordinator is disabled",
+                agent_id, resource,
+            )
+            return False
+
         # Try Redis distributed lock first
         if self._redis_client and self._redis_client._available:
             try:
@@ -140,8 +190,9 @@ class MultiAgentCoordinator:
                     logger.info("Agent %s released distributed lease on %s", agent_id, resource)
                     return True
                 return False
-            except Exception:
-                logger.exception("Redis distributed lock release failed, falling back to in-memory")
+            except Exception as exc:
+                self._disable(exc)
+                return False
         
         # Fallback to in-memory lock
         with self._lock:
