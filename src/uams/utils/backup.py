@@ -29,8 +29,15 @@ class BackupManager:
     def __init__(self, store: MemoryStore):
         self._store = store
 
-    def backup_to_file(self, filepath: str, limit: int = 100000) -> int:
-        """Export all memories to a JSONL file. Returns number of memories exported."""
+    def backup_to_file(self, filepath: str, limit: int = 100000) -> Optional[int]:
+        """Export all memories to a JSONL file.
+
+        Returns number of memories exported on success, or None on
+        failure (an empty store returns 0, which is distinct from the
+        failure signal). The exception is logged at ERROR level so the
+        operator can investigate without needing to inspect return
+        values.
+        """
         try:
             memories = self._store.list_all(limit=limit)
             count = 0
@@ -41,11 +48,16 @@ class BackupManager:
             logger.info("Backup completed: %d memories exported to %s", count, filepath)
             return count
         except Exception:
-            logger.exception("Backup failed to %s", filepath)
-            return 0
+            logger.error("Backup failed to %s", filepath, exc_info=True)
+            return None
 
-    def restore_from_file(self, filepath: str) -> int:
-        """Import memories from a JSONL file. Returns number of memories imported."""
+    def restore_from_file(self, filepath: str) -> Optional[int]:
+        """Import memories from a JSONL file.
+
+        Returns number of memories imported on success, or None on
+        fatal failure (a file with zero valid lines returns 0; a file
+        that could not be opened at all returns None).
+        """
         try:
             count = 0
             with open(filepath, "r", encoding="utf-8") as f:
@@ -64,8 +76,8 @@ class BackupManager:
             logger.info("Restore completed: %d memories imported from %s", count, filepath)
             return count
         except Exception:
-            logger.exception("Restore failed from %s", filepath)
-            return 0
+            logger.error("Restore failed from %s", filepath, exc_info=True)
+            return None
 
     def backup_to_dict(self, limit: int = 100000) -> List[Dict[str, Any]]:
         """Export all memories to a list of dictionaries."""
