@@ -50,11 +50,13 @@ UAMS 将记忆基础设施从智能体框架和应用领域中解耦出来。它
 | **事件总线采集** | 通过通用事件总线实现零框架耦合的事件捕获 |
 | **混合检索** | BM25 关键词 + 稠密向量 + 知识图谱遍历，以 RRF（倒数排序融合）整合 |
 | **隐私与去重** | 自动脱敏敏感信息，SHA-256 滚动窗口去重 |
-| **艾宾浩斯遗忘** | 每个记忆层级可配置独立的遗忘曲线 |
-| **级联删除（GDPR 友好）** | 通过关系边与反向引用按需级联删除,附 JSONL 审计轨迹([docs/CASCADE_FORGET.md](docs/CASCADE_FORGET.md)) |
-| **多智能体协调** | 资源租约（Lease）、信号传递（Signal）、共享记忆空间 |
+| **艾宾浩斯遗忘** | 每个记忆层级可配置独立的遗忘曲线 + **按 category 覆盖** ([docs/HALF_LIFE_TUNING.md](docs/HALF_LIFE_TUNING.md)) |
+| **级联删除（GDPR 友好）** | 通过关系边与反向引用按需级联删除,附 JSONL 审计轨迹。4 个策略:`ISOLATED` / `OUTGOING` / `BIDIRECTIONAL`（默认,同层）/ **`FULL_CASCADE`**（显式 opt-in,跨层）([docs/CASCADE_FORGET.md](docs/CASCADE_FORGET.md)) |
+| **多智能体协调** | 资源租约（Redis 分布式锁 + 失败自动禁用）、信号传递、共享记忆空间 |
 | **Token 预算注入** | 自动将检索结果压缩到 LLM 上下文窗口限制内 |
 | **可插拔存储** | 内存存储（默认）、ChromaDB、SQLite、PostgreSQL+pgvector、Neo4j |
+| **remember() 语义级去重（opt-in）** | 新事实与已有语义记忆余弦相似度 ≥ `remember_dedup_threshold` 时,返回已有 `MemoryId` 而不存新副本 |
+| **100k 并发压测（A+ 必备）** | `benchmarks/stress_test.py` 跑 100k 操作并发,JSON 报告上传 CI artifact ([docs/STRESS_TEST.md](docs/STRESS_TEST.md)) |
 | **框架无关** | 兼容 Claude、GPT、LangChain、AutoGen 或自研智能体 |
 
 ---
@@ -71,14 +73,16 @@ from uams.pipeline.cascade import CascadeStrategy
 
 u = UniversalMemorySystem(storage_backend="sqlite")
 
-# 三种策略,均有 best-effort 删除 + JSONL 审计
-u.forget("mem-1", cascade=CascadeStrategy.ISOLATED)        # 单条(旧版行为)
-u.forget("mem-1", cascade=CascadeStrategy.OUTGOING)         # + 同层正向目标
-u.forget("mem-1")                                            # 默认:双向级联(GDPR)
+# 四种策略，均有 best-effort 删除 + JSONL 审计
+u.forget("mem-1", cascade=CascadeStrategy.ISOLATED)          # 单条（旧版行为）
+u.forget("mem-1", cascade=CascadeStrategy.OUTGOING)           # + 同层正向目标
+u.forget("mem-1")                                              # 默认：双向级联（GDPR，同层）
+u.forget("mem-1", cascade=CascadeStrategy.FULL_CASCADE)       # 显式 opt-in：跨层也删（GDPR 第 17 条完整兑现）
 
 # 返回 CascadeReport
 report = u.forget("mem-1")
-print(report.deleted_ids, report.orphan_ids, report.failed_ids)
+print(report.deleted_ids, report.orphan_ids, report.failed_ids,
+      report.cross_tier_deleted_ids)  # FULL_CASCADE 才有内容
 print(report.is_complete, report.audit_log_path)
 ```
 

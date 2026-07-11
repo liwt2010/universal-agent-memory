@@ -34,6 +34,20 @@ It silently captures what your agent does, compresses it into a searchable memor
 
 ---
 
+## 🆕 What's new in 7-11 (v0.2)
+
+| Change | What | Why |
+|--------|------|-----|
+| `CascadeStrategy.FULL_CASCADE` | New explicit opt-in strategy that **also** deletes cross-tier memories (not just records them as orphans) | True GDPR Article 17 "right to be forgotten" — data gone from every storage layer, not just the originating tier. Default `BIDIRECTIONAL` behavior unchanged. |
+| `remember_dedup_enabled` + `remember_dedup_threshold` | Opt-in semantic dedup: if a new fact is ≥ threshold cosine-similar to an existing SEMANTIC memory, return the existing `MemoryId` instead of storing a duplicate | Prevents "I like vegetables" + "I'm vegetarian" coexisting as separate memories. Requires an embedding function; falls back to "always store" with a debug log otherwise. |
+| `category_half_life_overrides` | Per-category Ebbinghaus override (e.g. `{"birthday": None, "short_term_preference": 3*86400}`) | One tier default (90d) was too coarse. Operators can tune per category from observed traffic. Empty by default — must be data-driven, see [docs/HALF_LIFE_TUNING.md](docs/HALF_LIFE_TUNING.md). |
+| `benchmarks/stress_test.py` + CI `stress-test-real-deps` | 100k-op concurrent stress test against real backends (PG / ChromaDB / Redis / Neo4j), JSON report per backend | One of the four A+ conditions. Real-world concurrency issues (lock contention, memory leaks, FTS5 edge cases) are surfaced. |
+| 7-11 hard PR (commits `8387256`–`215d348`) | `pickle.loads` RCE path → `json.loads`; `backup.py` silent 0 → `None`; `coordinator.py` Redis fail auto-disable | Security hardening before A+ pen-test. See `PRODUCTION_ASSESSMENT.md` v5. |
+
+See [CHANGELOG.md](CHANGELOG.md) for the full diff.
+
+---
+
 ## ✨ Core Features
 
 | Feature | Description |
@@ -42,13 +56,14 @@ It silently captures what your agent does, compresses it into a searchable memor
 | **Event Bus Ingestion** | Zero-framework-coupling event capture via a universal event bus |
 | **Hybrid Retrieval** | BM25 keyword + dense vector + knowledge graph traversal, fused with RRF |
 | **Privacy & Deduplication** | Automatic secret stripping and SHA-256 rolling deduplication |
-| **Ebbinghaus Decay** | Configurable forgetting curves per memory tier |
-| **Cascade Forget (GDPR)** | Configurable cascade-delete through relations & reverse references with JSONL audit trail ([docs/CASCADE_FORGET.md](docs/CASCADE_FORGET.md)) |
-| **Multi-Agent Coordination** | Resource leases, signal passing, and shared memory spaces |
+| **Ebbinghaus Decay** | Configurable forgetting curves per memory tier + **per-category overrides** ([docs/HALF_LIFE_TUNING.md](docs/HALF_LIFE_TUNING.md)) |
+| **Cascade Forget (GDPR)** | Configurable cascade-delete through relations & reverse references with JSONL audit trail. 4 strategies: `ISOLATED` / `OUTGOING` / `BIDIRECTIONAL` (default, same-tier) / **`FULL_CASCADE`** (explicit opt-in, cross-tier) ([docs/CASCADE_FORGET.md](docs/CASCADE_FORGET.md)) |
+| **Multi-Agent Coordination** | Resource leases (with Redis distributed lock + auto-disable on failure), signal passing, shared memory spaces |
 | **Token Budget Injection** | Automatically compresses retrieved context to fit LLM windows |
 | **Pluggable Storage** | In-memory, SQLite, PostgreSQL, Redis, Neo4j, ChromaDB |
+| **Semantic Dedup on remember()** | Opt-in: if a new fact is ≥ `remember_dedup_threshold` cosine-similar to an existing SEMANTIC memory, return the existing `MemoryId` instead of storing a duplicate |
 | **Framework Agnostic** | Works with Claude, GPT, LangChain, AutoGen, or custom agents |
-| **Production-Safe Foundation** | Thread-safe, error handling, graceful degradation, connection pooling, rate limiting *(rated B+/A- — see PRODUCTION_ASSESSMENT.md)* |
+| **Production-Safe Foundation** | Thread-safe, error handling, graceful degradation, connection pooling, rate limiting, **100k stress test infrastructure** ([docs/STRESS_TEST.md](docs/STRESS_TEST.md)) *(rated B+/A- — see PRODUCTION_ASSESSMENT.md)* |
 
 ---
 
@@ -64,20 +79,23 @@ from uams.pipeline.cascade import CascadeStrategy
 
 u = UniversalMemorySystem(storage_backend="sqlite")
 
-# Three strategies, all with best-effort delete + JSONL audit trail
-u.forget("mem-1", cascade=CascadeStrategy.ISOLATED)        # single-shot (legacy)
-u.forget("mem-1", cascade=CascadeStrategy.OUTGOING)         # + out-edge targets (same tier)
-u.forget("mem-1")                                            # default: bidirectional (GDPR-aligned)
+# Four strategies, all with best-effort delete + JSONL audit trail
+u.forget("mem-1", cascade=CascadeStrategy.ISOLATED)          # single-shot (legacy)
+u.forget("mem-1", cascade=CascadeStrategy.OUTGOING)           # + out-edge targets (same tier)
+u.forget("mem-1")                                              # default: bidirectional (GDPR-aligned, same-tier)
+u.forget("mem-1", cascade=CascadeStrategy.FULL_CASCADE)       # EXPLICIT opt-in: cross-tier too (GDPR Article 17)
 
 # Returns CascadeReport
 report = u.forget("mem-1")
-print(report.deleted_ids, report.orphan_ids, report.failed_ids)
+print(report.deleted_ids, report.orphan_ids, report.failed_ids,
+      report.cross_tier_deleted_ids)  # empty unless FULL_CASCADE
 print(report.is_complete, report.audit_log_path)
 ```
 
 **Guarantees**:
 - **Visit-set + max-depth cap** prevent infinite loops on cyclic relations.
-- **Strict same-tier scope** — cross-tier edges are recorded as orphans but **never** cause a cross-tier deletion.
+- **`ISOLATED` / `OUTGOING` / `BIDIRECTIONAL` (default)** — strict same-tier scope. Cross-tier edges are recorded as `report.orphan_ids` but never cause a cross-tier deletion.
+- **`FULL_CASCADE` (explicit opt-in only)** — cross-tier edges are followed and the foreign memory is deleted from its own tier. The deletion is recorded in `report.cross_tier_deleted_ids` (id, original_tier) for the GDPR audit trail. **Use this when a user invokes GDPR Article 17 and wants the data gone from every storage layer UAMS owns**, not just the originating tier.
 - **Hybrid in-edge discovery** — `auto` mode uses per-store reverse index when available, falls back to `O(N)` scan otherwise.
 - **Best-effort delete** — partial failures live in `report.failed_ids`; other memories still get deleted. Audit log written either way.
 
@@ -540,10 +558,28 @@ LLM-backed output token count is bounded (~200 words), so it stays roughly **O(1
 from uams.benchmarks import BenchmarkSuite
 
 results = BenchmarkSuite.run_all(n=1000)
-# Store: ~50,000 ops/sec
-# Retrieve: ~100,000 ops/sec
-# Search: ~10,000 ops/sec
-# Delete: ~5,000 ops/sec
+# Numbers above are illustrative; run BenchmarkSuite.run_all on your
+# target backend for real numbers.
+```
+
+### 100k Stress Test (A+ requirement)
+
+The `benchmarks/stress_test.py` script runs 100k operations (mixed
+store / retrieve / search / delete) against a real backend with
+concurrent workers, emitting a JSON report with ops/sec,
+p50/p95/p99 latency, error rate, per-op breakdown, and RSS memory
+growth. The CI matrix runs it against PostgreSQL, ChromaDB, Redis,
+and Neo4j; JSON reports are uploaded as `stress-report-{backend}`
+artifacts for trend tracking. Full guide in
+[docs/STRESS_TEST.md](docs/STRESS_TEST.md).
+
+```bash
+# 100k ops against PostgreSQL with 32 concurrent workers
+python -m benchmarks.stress_test --backend postgresql \
+    --ops 100000 --concurrency 32 --timeout 1800
+
+# 10k-ops smoke (in-process, ~1 second)
+python -m benchmarks.stress_test --backend memory --ops 10000
 ```
 
 Run the token compression demo yourself:
