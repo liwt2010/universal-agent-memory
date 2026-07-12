@@ -43,15 +43,29 @@ that case, so CI can flag a regression.
 
 ## CI integration
 
-`.github/workflows/ci.yml` runs the stress test as a separate
-matrix job (`stress-test-real-deps`) against the 4 service-container
-backends (PostgreSQL, ChromaDB, Redis, Neo4j):
+`.github/workflows/ci.yml` runs the stress test as 4 independent
+jobs against the service-container backends (PostgreSQL, ChromaDB,
+Redis, Neo4j):
+
+- `stress-postgresql` — `postgres:15-alpine` service container
+- `stress-redis` — `redis:7-alpine` service container
+- `stress-neo4j` — `neo4j:5-community` service container
+- `stress-chromadb` — no service container (uses chromadb's
+  in-process `EphemeralClient`)
+
+Each job:
 
 - 100k ops, 32 concurrent workers
-- 1800s (30 min) per-backend timeout
+- 1800s (30 min) timeout
 - `continue-on-error: true` — informational by default, since
   real-world backends can flake at high concurrency
 - JSON report uploaded as an artifact (`stress-report-{backend}`)
+
+> **Note**: the original design was a single 4-backend matrix job
+> that declared all 3 service containers. On busy runners this caused
+> "One or more containers failed to start." and zero artifacts. The
+> 4-independent-jobs design (commit `4927149`) fixes that by giving
+> each job only its own service.
 
 The CI job is **not a hard gate** because flaky-network CI runners
 make 100k ops non-deterministic. The operator is expected to review
@@ -121,6 +135,32 @@ regression:
 To wire a new storage backend into the stress test:
 
 1. Add a builder branch to `_build_store()` in `benchmarks/stress_test.py`.
-2. Add the corresponding CI matrix entry to `.github/workflows/ci.yml`
-   with the right service container.
+2. Add a new `stress-<backend>` job in `.github/workflows/ci.yml`
+   (NOT to a matrix — see the "CI integration" section above for why).
+   Declare the service container in the job's `services:` block.
+3. Add a brief doc note to this file.
+
+## Diagnosed bugs (as of 2026-07-12)
+
+The stress test has been useful for surfacing real bugs in storage
+backends. The list so far:
+
+| Bug | Backend | Symptom in stress | Fix |
+|-----|---------|-------------------|-----|
+| `pool_max=10` < 32 workers | PostgreSQL | `error_rate=81%`, all op types equally broken | Pass `pool_max=64` in stress_test.py (overrides default) |
+| `max_capacity` kwarg not accepted | Redis | `TypeError: unexpected keyword argument 'max_capacity'` at setup, **no report produced** | Remove the kwarg from stress_test.py's `_build_store()` |
+| Unnecessary `RLock` serialization | Redis | 7.6 ops/sec for 32 workers (each op took ~4 sec) | Remove `with self._lock:` from 6 methods in `RedisStore` |
+| Multi-step ops without pipeline | Redis | 3 round-trips per `store()` (HSET + EXPIRE + ZADD) | Wrap in `pipeline(transaction=False)` |
+| O(N) full SCAN in `search_keywords()` | Redis | Search p50 = 28 sec on 13k memories | Add inverted token index (per-term SET + per-memory token SET) |
+| WAL mode + concurrent writers | SQLite | "Database is locked" errors at 4+ threads | `RLock` around writes + `busy_timeout=5000` |
+| FTS5 hyphen parsing | SQLite | `search_keywords('state-of-the-art')` returns empty | Wrap query as FTS5 phrase |
+
+## Adding a new backend
+
+To wire a new storage backend into the stress test:
+
+1. Add a builder branch to `_build_store()` in `benchmarks/stress_test.py`.
+2. Add a new `stress-<backend>` job in `.github/workflows/ci.yml`
+   (NOT to a matrix — see the "CI integration" section above for why).
+   Declare the service container in the job's `services:` block.
 3. Add a brief doc note to this file.

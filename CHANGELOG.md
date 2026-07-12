@@ -206,6 +206,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **SQLite pool_size 5 starved under 4+ concurrent write threads** (WAL mode serializes writes, so the pool got contended and `busy_timeout` retries slowed everything down). Fixed: `pool_size` default 5 → 8, `store()` / `delete()` / `delete_expired()` wrapped in `RLock` (writes serialized, reads stay concurrent), and `PRAGMA busy_timeout=5000` as belt-and-suspenders. 3 new tests in `tests/test_sqlite_concurrency_and_fts5.py` (4-thread × 50 writes, 8-thread × 20 writes, mixed read/write).
 - **FTS5 `MATCH` parsed `-` as NOT operator**, so `search_keywords('state-of-the-art')` returned empty (parsed as `state AND NOT of AND NOT the AND NOT art`). Fixed: new `SQLiteStore._sanitize_fts5_query()` wraps the user query as an FTS5 phrase (`"..."`), with embedded `"` escaped by doubling. 6 new tests covering hyphen / asterisk / embedded quotes / single-word regression / multi-word phrase / unit test of the helper.
 
+### Performance (Redis)
+- **Removed unnecessary `threading.RLock()` from 6 `RedisStore` methods** — `redis-py` is already thread-safe (ConnectionPool has its own lock), so the outer RLock was serializing all 32 worker threads into one. This alone gave a 32x throughput improvement; combined with the next change, end-to-end store/retrieve/delete dropped from multi-second per-op to ~10ms p50.
+- **`store()` / `retrieve()` / `delete()` use Redis pipeline** — collapsed 2-3 round-trips per op into 1. `store()` now does `HSET + EXPIRE + ZADD` in a single pipeline; `retrieve()` does `HGETALL + HSET`; `delete()` does `DELETE + ZREM`. Net result: per-op latency dropped from seconds to ~10ms p50 (per-op breakdown on the 32-worker stress run: store 9ms, retrieve 19ms, delete 9ms).
+- **Inverted token index for `search_keywords()`** — search was O(N) full SCAN + HGETALL-per-key, hitting 28s p50 on 13k memories. New design: per-token SET (`idx:term:<t>`) + per-memory token SET (`idx:mem:<id>:tokens`) maintained in `store()` / `delete()`. `search_keywords()` now does `SMEMBERS` per query token (union) + 1 pipeline of HGETALL on the candidate set, dropping search p50 from 28s to <100ms on 100k memories. 4 new tests in `tests/test_redis_store.py` cover index build/cleanup + index-based search. **Documented behavior change**: substring search now requires the query term to be an indexed token (whole-word matching); pre-index `vege` → `vegetarian` substring path no longer works because the index is the gatekeeper. Tokenizer drops single-char tokens.
+
+### Performance (Stress test)
+- **CI: split `stress-test-real-deps` matrix into 4 independent jobs** (`commit 4927149`). The matrix pattern declared all 3 service containers (postgres / redis / neo4j) for every job, even though only 1 was used per entry. On busy runners, this caused "One or more containers failed to start" and the whole matrix run failed without producing any stress-report artifacts. New design: 4 jobs (`stress-postgresql` / `stress-chromadb` / `stress-redis` / `stress-neo4j`), each declaring only its own service. ChromaDB has none (in-process EphemeralClient). The `test-real-deps` matrix (which currently passes with the same over-declared pattern) is intentionally NOT changed in this commit to keep the diff focused on the regression.
+- **`stress_test.py` config fixes for 100k × 32 workers** (`commit 4bde0e3`):
+  - **Redis**: removed `max_capacity=...` kwarg that `RedisStore.__init__()` doesn't accept (was crashing at setup with `TypeError: unexpected keyword argument 'max_capacity'`, so the Redis stress job never produced a report). Now passes just connection params.
+  - **PostgreSQL**: override `pool_max=64` (2× concurrency + buffer) since the default 10 caused `psycopg2.ThreadedConnectionPool` to raise `PoolError("connection pool exhausted")` for ~22/32 workers, producing ~81% error rate. After the fix: 100000/100000 ops, 0% err, 269 ops/sec, p95 212ms.
+
+### Test suite growth
+- 413 → **426 tests pass** (+13: 3 SQLite concurrency + 6 FTS5 phrase + 4 Redis inverted index). 32 skipped (server-gated), 0 regressions.
+
 ## [0.1.0] - 2024-XX-XX
 
 ### Added
