@@ -1,6 +1,36 @@
 # UAMS 生产级评估报告（诚实评级 + 实测更新版）
 
-> **2026-07-11 v5 更新(本次)**:本次为 **安全加固批次**。Ruff `S` 安全规则跑出来 44 个 errors,**3 个真问题** + 41 个 false positive,真问题修了:
+> **2026-07-12 v7 更新(本次)**:本次为 **独立审计加固批次**。本地手工审计 + 后台独立 agent(并发、DX 两个角度)交叉验证,**共发现 15 个真问题**,分布在 P0/P1/P2 三档,5 个 commit 修复完成,版本从 0.1.0 跃升到 **0.3.0**。
+>
+> **P0 真问题(静默 correctness)**:
+> - **P0-A**:`SQLiteStore.retrieve()` 在 `SELECT` 触发的 implicit transaction 上又调 `conn.execute("BEGIN")`,WAL 模式下隐藏,legacy journal 模式下抛 `OperationalError: cannot start a transaction within a transaction`,被外层 `except Exception` 吞掉 → **每次 retrieve 命中都返回 None**。修复:删除冗余 BEGIN。
+> - **P0-B**:`RedisStore.delete_expired()` 的 `return count` 缩进在 `for` 循环体内,**每次 sweep 只删第一个过期项**,Redis expiry ZSET 单调增长。修复:return 移到 for 外。+1 回归测试(5 expired → 期望返回 5)。
+>
+> **P1 可靠性 / 并发**:
+> - **Bug 7**:`docker_entrypoint.py` 没注册 SIGTERM handler,Docker stop 时 Python 硬退出 → WORKING-tier memory 全丢,SQLite WAL 不刷盘。修复:加 `ums.register_signal_handlers()`。
+> - **Bug 8**:`MemoryStore.close()` 不在抽象接口里 → 自定义后端不被 `shutdown()` 清理。修复:加 `@abstractmethod` + 给 InMemoryStore / ChromaDBStore / Neo4jStore 补实现。
+> - **Bug 9**:`decay_sweep()` 没锁 → 慢 sweep 与下一个 60s tick 撞车,race condition。修复:进程级 `Lock`(non-blocking acquire,第二个调用返回 0)。
+> - **Bug 22**:`MultiAgentCoordinator._signals` 列表无限增长 → 加 `MAX_SIGNALS=10000` cap。
+> - **Bug 23**:`RedisStore` 没有 auto-disable 模式 → 网络断开后每个调用都进 except 日志洪水。修复:仿照 `MultiAgentCoordinator._disabled` 加状态机。
+> - **Bug 24**:`SQLiteStore.close()` 不处理 in-flight 连接 → 已被线程持有的 conn 关闭后被 `_return_connection` 重新塞回 pool。修复:追踪 `_all_conns`,`_return_connection` 检查 `_available` 决定 close-or-pool。
+> - **Bug 25**:`BackupManager.restore_from_file` 把 JSON 错误和存储错误混在一起 → 都报 "invalid backup line"。修复:split 两类 except,JSON 错误 skip 行,存储失败 abort 整体 import。
+>
+> **GDPR / 观测**:
+> - **Bug 5**:`CascadeForgetter._locate_tier` 静默吞所有 except → 后端故障被误判为"该 memory 不存在"。修复:每个 except 加 ERROR log + exc_info。
+>
+> **DX**:
+> - **Bug 21**:`docs/API.md` 文档了**虚构的 `sync()` 方法**和一堆不存在的参数(`backend`/`top_k`/`memory_type`/`confidence` 等),`EventType` 表列出 `SYSTEM_EVENT`/`MANUAL`/`ERROR`(均不存在),`PrivacyLevel` 表有 `CONFIDENTIAL`(不存在),`UAMSConfig` 示例全部错误字段名。修复:全部对齐真实代码。
+> - **P2 #27**:`AsyncUniversalMemorySystem.forget()` 类型标 `-&gt; bool`,实际返回 `CascadeReport`,且缺 `cascade`/`max_depth`/`in_edge_mode` kwargs。修复:类型 + kwargs 都补齐。
+> - **P2 #29**:`UAMSConfig.sqlite_pool_size` 声明了但 `from_env()` 没解析 `UAMS_SQLITE_POOL_SIZE`,`UniversalMemorySystem._init_stores_from_config()` 没把 `pool_size` 传给 `SQLiteStore`。修复:三层全部接通。
+> - **P2 #28**:`pyproject.toml` URLs 指向 `github.com/uams/...`(placeholder),实际仓库是 `liwt2010/universal-agent-memory`。修复:对齐。
+> - **Bug 1**:`pyproject.toml` 的 `embeddings` 和 `llm` extras 缩进在 `chromadb` 下面(语法上不是顶层 key),`pip install universal-agent-memory[llm]` 失败。修复:顶层对齐。`openai` 加进 `all` extras。
+>
+> **总账**:5 commits,测试 427 → **456 pass** (+29,21 skipped,0 regression),CI 本地 + 真实验证 + 后台并发审计 + DX 审计三重交叉,**v7 评级动作 — B+/A- → A-**:
+> - P0-A 静默 retrieve 失败 + P0-B Redis 单调增长 这两个**用户每次都会撞的真 bug**修好,可靠性层(原本 B+)升到 A-。
+> - P1 修复堵住了"测试通过但生产断"的几条路(SIGTERM、并发 sweep、Redis 断网、SQLite close race),文档真实化后**首次安装用户的踩坑率显著下降**。
+> - **v7 没到 A+**:仍然没解决真实 case study / 真实 LLM 月报 / 第三方 pen-test / 6 后端 cluster 演练 / Helm 这 5 个缺口(7-11 v5 列的缺口 7 已部分推进,本批是 P0/P1/P2 维度,不是新增能力维度)。
+
+> **2026-07-11 v5 更新**:本次为 **安全加固批次**。Ruff `S` 安全规则跑出来 44 个 errors,**3 个真问题** + 41 个 false positive,真问题修了:
 > - **R1**(`8387256`):embedding 序列化 `pickle.loads` → `json.loads`,从源头消除"存储被攻陷即可 RCE"路径。PostgreSQL / SQLite / Redis 三后端 × 读写 = 6 处,新增 `utils/embedding_serde.py` 集中处理 + legacy pickle backward-compat fallback。+11 tests。
 > - **R2**(`8c4da89`):`BackupManager.backup_to_file` / `restore_from_file` 失败时 `return 0` 静默降级 → 改 `return None` + `log.error`,调用方可以区分"空结果"(0)和"真失败"(None)。+4 tests。
 > - **R3**(`ae2ffa0`):`MultiAgentCoordinator` Redis 锁失败时静默降级 in-memory (这在多进程部署里是 race condition) → 改 auto-disable 状态机,首次失败即标 `_disabled=True`,后续 `acquire_lease` / `release_lease` 短路返回 `None` / `False`,日志明确 auto-disabling,其它 worker 不受影响。+7 tests。
