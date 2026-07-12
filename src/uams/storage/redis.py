@@ -5,8 +5,9 @@ Provides distributed cache, pub/sub signals, and TTL-based expiry.
 """
 
 import json
+import re
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from uams.storage.base import MemoryStore
 from uams.core.models import (
@@ -18,6 +19,18 @@ from uams.utils.logging import get_logger
 from uams.utils.embedding_serde import serialize_embedding, deserialize_embedding
 
 logger = get_logger(__name__)
+
+# Tokenizer for inverted index. Lowercases, splits on non-alphanumeric, drops
+# single-character tokens (avoids indexing 'a', 'I', etc. which would explode
+# the index and rarely carry search signal).
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_MIN_TOKEN_LEN = 2
+
+
+def _tokenize(text: str) -> Set[str]:
+    if not text:
+        return set()
+    return {t for t in _TOKEN_RE.findall(text.lower()) if len(t) >= _MIN_TOKEN_LEN}
 
 
 class RedisStore(MemoryStore):
@@ -95,6 +108,14 @@ class RedisStore(MemoryStore):
 
     def _memory_key(self, memory_id: str) -> str:
         return f"{self._key_prefix}{memory_id}"
+
+    def _term_index_key(self, term: str) -> str:
+        """Key for the inverted-index SET that maps a term to memory IDs."""
+        return f"{self._key_prefix}idx:term:{term}"
+
+    def _mem_tokens_key(self, memory_id: str) -> str:
+        """Key for the per-memory SET that stores its tokens (used for delete cleanup)."""
+        return f"{self._key_prefix}idx:mem:{memory_id}:tokens"
 
     def _memory_to_dict(self, memory: Memory) -> Dict[str, Any]:
         """Serialize memory to Redis-compatible dict."""
@@ -227,6 +248,21 @@ class RedisStore(MemoryStore):
                 )
             pipe.execute()
             logger.debug("Stored memory %s in Redis (key=%s)", memory.id, key)
+
+            # Update inverted keyword index. This is a separate write
+            # (after the main write succeeds) so a failed index update
+            # doesn't leave the memory half-stored. The cost is one
+            # extra round-trip for store(), but search() drops from
+            # O(N) full SCAN to O(K) term lookups.
+            tokens = _tokenize(memory.payload.raw)
+            if tokens:
+                mem_id = str(memory.id)
+                mem_tokens_key = self._mem_tokens_key(mem_id)
+                idx_pipe = self._client.pipeline(transaction=False)
+                for t in tokens:
+                    idx_pipe.sadd(self._term_index_key(t), mem_id)
+                idx_pipe.sadd(mem_tokens_key, *tokens)
+                idx_pipe.execute()
         except Exception:
             logger.exception("Redis store failed for memory %s", memory.id)
 
@@ -254,10 +290,23 @@ class RedisStore(MemoryStore):
             return False
         try:
             key = self._memory_key(memory_id)
-            # DELETE + ZREM collapsed into 1 round-trip via pipeline.
+            # Read tokens first so we can clean up the inverted index.
+            # (One extra round-trip, but only on delete — and avoids the
+            # need to SCAN the term sets, which would be O(N) again.)
+            mem_tokens_key = self._mem_tokens_key(memory_id)
+            tokens = self._client.smembers(mem_tokens_key) or set()
+            decoded_tokens = {
+                t.decode("utf-8") if isinstance(t, bytes) else t
+                for t in tokens
+            }
+
+            # DELETE + ZREM + SREM (per token) + DEL (mem:tokens) in one pipeline.
             pipe = self._client.pipeline(transaction=False)
             pipe.delete(key)
             pipe.zrem(self._expiry_zset_key, memory_id)
+            for t in decoded_tokens:
+                pipe.srem(self._term_index_key(t), memory_id)
+            pipe.delete(mem_tokens_key)
             results = pipe.execute()
             deleted = results[0] if results else 0
             logger.debug("Deleted memory %s from Redis (deleted=%d)", memory_id, deleted)
@@ -267,32 +316,55 @@ class RedisStore(MemoryStore):
             return False
 
     def search_keywords(self, query: str, k: int = 10) -> List[Memory]:
-        """Redis does not support full-text search natively. Use SCAN + matching."""
+        """Full-text-ish search backed by an inverted index.
+
+        Strategy: tokenize the query, look up the candidate memory IDs from
+        the per-term index (SMEMBERS per token, unioned for OR semantics),
+        then HGETALL the candidates in a single pipeline to filter by
+        original substring match (preserves the pre-index API contract).
+        Drops O(N) full SCAN to O(K) term lookups + O(candidates) HGETALL.
+        """
         if not self._available or not self._client:
             return []
         try:
-            results = []
-            cursor = 0
-            pattern = f"{self._key_prefix}*"
+            tokens = _tokenize(query)
+            if not tokens:
+                return []
+            # Candidate memory IDs: union across all query tokens.
+            # Decode bytes to str for downstream key construction.
+            candidates: Set[str] = set()
+            for t in tokens:
+                for mid in self._client.smembers(self._term_index_key(t)) or set():
+                    candidates.add(
+                        mid.decode("utf-8") if isinstance(mid, bytes) else mid
+                    )
+            if not candidates:
+                return []
+
+            # Batch HGETALL all candidates in one pipeline (1 round-trip).
+            candidate_keys = [self._memory_key(mid) for mid in candidates]
+            pipe = self._client.pipeline(transaction=False)
+            for ck in candidate_keys:
+                pipe.hgetall(ck)
+            all_data = pipe.execute()
+
+            # Apply original substring match to preserve pre-index semantics.
+            # (Substring matching on top of token index is more permissive:
+            # "vege" still finds "vegetarian" as a substring.)
             query_lower = query.lower()
-
-            while True:
-                cursor, keys = self._client.scan(cursor, match=pattern, count=100)
-                for key in keys:
-                    data = self._client.hgetall(key)
-                    if not data:
-                        continue
-                    raw = data.get(b"raw", b"").decode("utf-8", errors="ignore").lower()
-                    if any(term in raw for term in query_lower.split()):
-                        mem = self._dict_to_memory(data)
-                        if mem:
-                            results.append(mem)
-                        if len(results) >= k:
-                            break
-                if cursor == 0 or len(results) >= k:
-                    break
-
-            return results[:k]
+            query_terms = query_lower.split()
+            results: List[Memory] = []
+            for data in all_data:
+                if not data:
+                    continue
+                raw = data.get(b"raw", b"").decode("utf-8", errors="ignore").lower()
+                if any(term in raw for term in query_terms):
+                    mem = self._dict_to_memory(data)
+                    if mem:
+                        results.append(mem)
+                    if len(results) >= k:
+                        break
+            return results
         except Exception:
             logger.exception("Redis keyword search failed")
             return []

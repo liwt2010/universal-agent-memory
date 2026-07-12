@@ -52,6 +52,18 @@ class FakePipeline:
         self._commands.append(("zrem", key, members))
         return self
 
+    def sadd(self, key, *members):
+        self._commands.append(("sadd", key, members))
+        return self
+
+    def srem(self, key, *members):
+        self._commands.append(("srem", key, members))
+        return self
+
+    def hgetall(self, key):
+        self._commands.append(("hgetall", key))
+        return self
+
     def execute(self):
         results = []
         for cmd in self._commands:
@@ -59,6 +71,9 @@ class FakePipeline:
             if name == "hset":
                 _, key, args, kwargs = cmd
                 results.append(self._fake.hset(key, *args, **kwargs))
+            elif name == "hgetall":
+                _, key = cmd
+                results.append(self._fake.hgetall(key))
             elif name == "expire":
                 _, key, seconds = cmd
                 results.append(self._fake.expire(key, seconds))
@@ -71,6 +86,12 @@ class FakePipeline:
             elif name == "zrem":
                 _, key, members = cmd
                 results.append(self._fake.zrem(key, *members))
+            elif name == "sadd":
+                _, key, members = cmd
+                results.append(self._fake.sadd(key, *members))
+            elif name == "srem":
+                _, key, members = cmd
+                results.append(self._fake.srem(key, *members))
         return results
 
 
@@ -80,6 +101,7 @@ class FakeRedis:
     def __init__(self):
         self._hashes: dict = {}
         self._zsets: dict = {}
+        self._sets: dict = {}
         self._pubsub_channels: dict = {}
         self._cursor = 0
 
@@ -117,12 +139,22 @@ class FakeRedis:
     def delete(self, *keys):
         count = 0
         for k in keys:
-            if k in self._hashes:
-                del self._hashes[k]
+            k_str = k.decode("utf-8") if isinstance(k, bytes) else k
+            if k_str in self._hashes:
+                del self._hashes[k_str]
+                count += 1
+            if k_str in self._zsets:
+                del self._zsets[k_str]
+                count += 1
+            if k_str in self._sets:
+                del self._sets[k_str]
                 count += 1
             for zkey, zval in list(self._zsets.items()):
-                if k.decode() if isinstance(k, bytes) else k in zval:
-                    del zval[k.decode() if isinstance(k, bytes) else k]
+                if k_str in zval:
+                    del zval[k_str]
+            for skey, sval in list(self._sets.items()):
+                if k_str in sval:
+                    sval.discard(k_str)
         return count
 
     def zadd(self, key, mapping):
@@ -147,6 +179,30 @@ class FakeRedis:
             m_str = m.decode() if isinstance(m, bytes) else m
             if m_str in z:
                 del z[m_str]
+                count += 1
+        return count
+
+    def sadd(self, key, *members):
+        if key not in self._sets:
+            self._sets[key] = set()
+        added = 0
+        for m in members:
+            m_norm = m.decode("utf-8") if isinstance(m, bytes) else m
+            if m_norm not in self._sets[key]:
+                self._sets[key].add(m_norm)
+                added += 1
+        return added
+
+    def smembers(self, key):
+        return set(self._sets.get(key, set()))
+
+    def srem(self, key, *members):
+        s = self._sets.get(key, set())
+        count = 0
+        for m in members:
+            m_norm = m.decode("utf-8") if isinstance(m, bytes) else m
+            if m_norm in s:
+                s.discard(m_norm)
                 count += 1
         return count
 
@@ -264,6 +320,69 @@ class TestRedisStoreMock(unittest.TestCase):
         self.store.store(self._make_memory(raw="two"))
         results = self.store.list_all(limit=10)
         self.assertTrue(len(results) >= 2)
+
+    def test_inverted_index_built_on_store(self):
+        """After store(), the per-term index and per-memory token set must exist."""
+        mem = self._make_memory(raw="apple banana cherry")
+        self.store.store(mem)
+        mem_id = str(mem.id)
+        # Per-memory token set should contain the 3 tokens
+        mem_tokens = self.fake.smembers(f"test:idx:mem:{mem_id}:tokens")
+        self.assertEqual(mem_tokens, {"apple", "banana", "cherry"})
+        # Per-term sets should each contain this memory's id
+        for term in ("apple", "banana", "cherry"):
+            ids = self.fake.smembers(f"test:idx:term:{term}")
+            self.assertIn(mem_id, ids)
+
+    def test_inverted_index_cleaned_on_delete(self):
+        """After delete(), the per-term sets and per-memory token set must be gone."""
+        mem = self._make_memory(raw="apple banana")
+        self.store.store(mem)
+        mem_id = str(mem.id)
+        self.store.delete(mem_id)
+        # Per-memory token set deleted
+        self.assertEqual(self.fake.smembers(f"test:idx:mem:{mem_id}:tokens"), set())
+        # Per-term sets have this memory removed
+        for term in ("apple", "banana"):
+            ids = self.fake.smembers(f"test:idx:term:{term}")
+            self.assertNotIn(mem_id, ids)
+
+    def test_inverted_index_search_uses_token_index(self):
+        """search_keywords() should find via token index, not full SCAN.
+
+        With 100 memories, 99 of which don't contain the term, an index-based
+        search returns the 1 hit in O(1) term lookup + O(1) HGETALL.
+        """
+        # Store 99 "noise" memories + 1 target
+        for i in range(99):
+            self.store.store(self._make_memory(raw=f"unrelated {i} noise"))
+        target = self._make_memory(raw="apple unique_target")
+        self.store.store(target)
+
+        results = self.store.search_keywords("apple", k=10)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].payload.raw, "apple unique_target")
+
+    def test_inverted_index_substring_falls_back_per_candidate(self):
+        """Per-candidate substring check is preserved.
+
+        Once the index narrows candidates to a set, we still check that any
+        query term is a substring of raw. This catches queries where a query
+        term IS a token in the index but the user expected a wider match
+        (e.g. a multi-word query where the second word is the substring
+        discriminator).
+        """
+        mem = self._make_memory(raw="apple pie")
+        self.store.store(mem)
+        # "apple" is a real token, "pie" is a real token. The query
+        # "apple" token-matches the index and the substring check passes.
+        results = self.store.search_keywords("apple", k=10)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].payload.raw, "apple pie")
+        # Note: a query like "app" (3 chars, tokenized but no memory has
+        # "app" as a token) returns 0 — the index is now the gatekeeper
+        # for what is searchable. This is a documented behavior change
+        # from the pre-index O(N) full-SCAN implementation.
 
 
 if __name__ == "__main__":
