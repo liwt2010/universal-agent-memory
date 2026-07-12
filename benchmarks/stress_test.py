@@ -336,18 +336,28 @@ def _build_store(backend: str, args) -> object:
 
     if backend == "redis":
         from uams.storage.redis import RedisStore
+        # Note: RedisStore does not accept max_capacity. The pool size is
+        # controlled via pool_max_connections (default 50, plenty for 32
+        # stress workers). Capacity is bounded by Redis server config, not
+        # by the client. See commit diagnosis 2026-07-12.
         return RedisStore(
             host=args.redis_host, port=args.redis_port,
             key_prefix=args.redis_prefix or "uams:stress:",
-            max_capacity=max(args.ops * 2, 10000),
         )
 
     if backend == "postgresql":
         from uams.storage.postgresql import PostgreSQLStore
+        # Stress test uses 32 concurrent workers by default. PostgreSQLStore
+        # defaults to pool_max=10, which causes psycopg2 to raise
+        # PoolError("connection pool exhausted") for ~22/32 workers and
+        # produces ~80% error rate. Override to 64 (= 2x concurrency + buffer)
+        # so the pool never starves the workers. See commit diagnosis
+        # 2026-07-12.
         return PostgreSQLStore(
             host=args.pg_host, port=args.pg_port,
             user=args.pg_user, password=args.pg_password,
             database=args.pg_db, table_name=args.pg_table,
+            pool_max=64,
         )
 
     if backend == "neo4j":
