@@ -384,6 +384,26 @@ class TestRedisStoreMock(unittest.TestCase):
         # for what is searchable. This is a documented behavior change
         # from the pre-index O(N) full-SCAN implementation.
 
+    def test_inverted_index_search_caps_candidate_set(self):
+        """With many candidates sharing a common token, search must
+        sample down to k*10 to bound JSON-deserialization cost.
+
+        Real-world stress: 200 memories all contain "common" token.
+        Search "common" should sample 100 (k*10=100) and return up to 10,
+        not HGETALL all 200 and JSON-decode them all.
+        """
+        import random
+        for i in range(200):
+            # Each memory has the "common" token plus a unique 20-char string
+            self.store.store(self._make_memory(
+                raw=f"common {''.join(random.choices('abcde', k=20))}_{i}"
+            ))
+        results = self.store.search_keywords("common", k=10)
+        # Should return at most k=10, even though 200 candidates exist
+        self.assertLessEqual(len(results), 10)
+        # And the search should have returned SOMETHING (not failed)
+        self.assertGreater(len(results), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

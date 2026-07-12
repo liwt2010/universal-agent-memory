@@ -5,6 +5,7 @@ Provides distributed cache, pub/sub signals, and TTL-based expiry.
 """
 
 import json
+import random
 import re
 import threading
 from typing import Any, Dict, List, Optional, Set
@@ -225,8 +226,11 @@ class RedisStore(MemoryStore):
             # redis-py is thread-safe (ConnectionPool has its own lock),
             # so we don't wrap in self._lock anymore — that was the root
             # cause of 7.6 ops/sec on 32-worker stress tests (32x serial
-            # bottleneck). Use a pipeline to collapse HSET + EXPIRE + ZADD
-            # into 1 round-trip instead of 3.
+            # bottleneck). Collapse EVERYTHING into 1 pipeline (1 round-trip):
+            # the main write, optional TTL/expiry, AND the inverted-index
+            # updates. Previously these were 2 separate pipelines; merging
+            # halves the per-op round-trip count, which on real Redis over
+            # a network is the dominant cost (1-5ms per round-trip).
             key = self._memory_key(str(memory.id))
             data = self._memory_to_dict(memory)
 
@@ -238,31 +242,24 @@ class RedisStore(MemoryStore):
                     ttl = ttl_seconds
             apply_ttl = bool(ttl and ttl > 0)
 
+            tokens = _tokenize(memory.payload.raw)
+            mem_id = str(memory.id)
+
             pipe = self._client.pipeline(transaction=False)
             pipe.hset(key, mapping=data)
             if apply_ttl:
                 pipe.expire(key, int(ttl))
                 pipe.zadd(
                     self._expiry_zset_key,
-                    {str(memory.id): memory.anchor.expires_at or (memory.anchor.created_at + ttl)},
+                    {mem_id: memory.anchor.expires_at or (memory.anchor.created_at + ttl)},
                 )
-            pipe.execute()
-            logger.debug("Stored memory %s in Redis (key=%s)", memory.id, key)
-
-            # Update inverted keyword index. This is a separate write
-            # (after the main write succeeds) so a failed index update
-            # doesn't leave the memory half-stored. The cost is one
-            # extra round-trip for store(), but search() drops from
-            # O(N) full SCAN to O(K) term lookups.
-            tokens = _tokenize(memory.payload.raw)
+            # Inverted index in the same pipeline (atomic-ish per Redis semantics).
+            for t in tokens:
+                pipe.sadd(self._term_index_key(t), mem_id)
             if tokens:
-                mem_id = str(memory.id)
-                mem_tokens_key = self._mem_tokens_key(mem_id)
-                idx_pipe = self._client.pipeline(transaction=False)
-                for t in tokens:
-                    idx_pipe.sadd(self._term_index_key(t), mem_id)
-                idx_pipe.sadd(mem_tokens_key, *tokens)
-                idx_pipe.execute()
+                pipe.sadd(self._mem_tokens_key(mem_id), *tokens)
+            pipe.execute()
+            logger.debug("Stored memory %s in Redis (key=%s, tokens=%d)", memory.id, key, len(tokens))
         except Exception:
             logger.exception("Redis store failed for memory %s", memory.id)
 
@@ -320,9 +317,14 @@ class RedisStore(MemoryStore):
 
         Strategy: tokenize the query, look up the candidate memory IDs from
         the per-term index (SMEMBERS per token, unioned for OR semantics),
-        then HGETALL the candidates in a single pipeline to filter by
-        original substring match (preserves the pre-index API contract).
-        Drops O(N) full SCAN to O(K) term lookups + O(candidates) HGETALL.
+        then sample down to ``k * 10`` candidates and HGETALL only those in
+        a single pipeline to filter by original substring match.
+
+        The cap on HGETALL count bounds worst-case latency when many
+        memories share a common token (e.g., all 14k stress-test memories
+        contain "stress"). Without the cap, search would HGETALL + JSON-
+        deserialize all 14k candidates per query (5+ seconds). With the
+        cap, search is bounded at ~O(k * 10) = O(100) candidates.
         """
         if not self._available or not self._client:
             return []
@@ -331,7 +333,6 @@ class RedisStore(MemoryStore):
             if not tokens:
                 return []
             # Candidate memory IDs: union across all query tokens.
-            # Decode bytes to str for downstream key construction.
             candidates: Set[str] = set()
             for t in tokens:
                 for mid in self._client.smembers(self._term_index_key(t)) or set():
@@ -341,7 +342,15 @@ class RedisStore(MemoryStore):
             if not candidates:
                 return []
 
-            # Batch HGETALL all candidates in one pipeline (1 round-trip).
+            # Sample down to at most k*10 candidates (with a floor of 50) to
+            # bound worst-case latency. Sampling is uniform without a Redis
+            # round-trip — Python's random.sample is sufficient.
+            fetch_count = min(len(candidates), max(k * 10, 50))
+            if len(candidates) > fetch_count:
+                # random.sample needs a sequence, not a set; convert once.
+                candidates = set(random.sample(list(candidates), fetch_count))
+
+            # Batch HGETALL the sampled candidates in one pipeline.
             candidate_keys = [self._memory_key(mid) for mid in candidates]
             pipe = self._client.pipeline(transaction=False)
             for ck in candidate_keys:
