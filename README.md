@@ -2,7 +2,7 @@
   <img src="https://img.shields.io/badge/version-0.1.0-blue.svg" alt="Version 0.1.0">
   <img src="https://img.shields.io/badge/python-3.9%2B-blue.svg" alt="Python 3.9+">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT">
-  <img src="https://img.shields.io/badge/tests-426%20passing-brightgreen.svg" alt="426 Tests Passing">
+  <img src="https://img.shields.io/badge/tests-427%20passing-brightgreen.svg" alt="427 Tests Passing">
   <img src="https://img.shields.io/badge/token%20compression-72%25%20LLM%20mode-orange.svg" alt="Token Compression: 72% with LLM mode (default heuristic ≈ 0%)">
   <img src="https://img.shields.io/badge/embeddings-pluggable-blueviolet.svg" alt="Pluggable Embeddings">
   <img src="https://img.shields.io/badge/backends-6%20storage%20engines-blueviolet.svg" alt="6 Storage Backends">
@@ -63,7 +63,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full diff.
 | **Pluggable Storage** | In-memory, SQLite, PostgreSQL, Redis, Neo4j, ChromaDB |
 | **Semantic Dedup on remember()** | Opt-in: if a new fact is ≥ `remember_dedup_threshold` cosine-similar to an existing SEMANTIC memory, return the existing `MemoryId` instead of storing a duplicate |
 | **Framework Agnostic** | Works with Claude, GPT, LangChain, AutoGen, or custom agents |
-| **Production-Safe Foundation** | Thread-safe, error handling, graceful degradation, connection pooling, rate limiting, **100k stress test infrastructure** ([docs/STRESS_TEST.md](docs/STRESS_TEST.md)) *(rated A- — see PRODUCTION_ASSESSMENT.md; v6 fix brought PostgreSQL + Neo4j to 100k/100k ops, 0% err, sub-1s p95)* |
+| **Production-Safe Foundation** | Thread-safe, error handling, graceful degradation, connection pooling, rate limiting, **100k stress test infrastructure** ([docs/STRESS_TEST.md](docs/STRESS_TEST.md)) *(rated A- — see PRODUCTION_ASSESSMENT.md; v6 fix brought PostgreSQL + Neo4j + Redis to 100k/100k ops, 0% err, sub-1.2s p95)* |
 
 ---
 
@@ -416,7 +416,7 @@ pytest tests/ -v
 pytest tests/ --cov=src/uams --cov-report=html
 ```
 
-**Test Results:** 426 tests, 0 failures, 32 skipped locally (PG/Redis/Neo4j service-gated; CI runs all 6 real backends green)
+**Test Results:** 427 tests, 0 failures, 32 skipped locally (PG/Redis/Neo4j service-gated; CI runs all 6 real backends green)
 
 | Test Category | Count | Coverage |
 |--------------|-------|----------|
@@ -435,7 +435,7 @@ pytest tests/ --cov=src/uams --cov-report=html
 | Mock storage (Redis / Neo4j) | 16 | Storage/retrieve/search/graph/PubSub/expiry |
 | **Real backend e2e (CI)** | **+50** | **6/6 storage engines verified in CI: PG / ChromaDB / Redis / Neo4j / SQLite / InMemory** |
 | **Cascade forget** | **+29** | **Strategy enum + audit writer + BFS + cycle/cross-tier/partial + system rewire** |
-| **Total** | **426** | **All passing locally (32 skipped, server-gated); CI 9/9 green for 6/6 backends** |
+| **Total** | **427** | **All passing locally (32 skipped, server-gated); CI 9/9 green for 6/6 backends** |
 
 ---
 
@@ -487,7 +487,7 @@ universal-agent-memory/
 │   ├── research_agent.py
 │   ├── multi_agent.py
 │   └── _token_compression_demo.py
-├── tests/                      # 426 test cases
+├── tests/                      # 427 test cases
 │   ├── test_system.py
 │   ├── test_chaos.py
 │   ├── test_aplus.py
@@ -573,19 +573,27 @@ isolation; JSON reports are uploaded as `stress-report-{backend}`
 artifacts for trend tracking. Full guide in
 [docs/STRESS_TEST.md](docs/STRESS_TEST.md).
 
-**v6 baseline (commit `cc1c7ed`)** — 100k ops × 32 workers, real
-service container, 0% error rate:
+**v6 baseline (commit `5331390`)** — 100k ops × 32 workers, real
+service container, 0% error rate, A- foundation:
 
 | Backend | ops completed | ops/sec | p50 | p95 | RSS+ | Status |
 |---------|---------------|---------|-----|-----|------|--------|
 | PostgreSQL | 100000/100000 | 269.8 | 10ms | 212ms | +24MB | ✅ success |
 | Neo4j | 100000/100000 | 195.8 | 52ms | 647ms | +34MB | ✅ success |
-| Redis | 13793/100000 | 7.4 | 11ms | 38s | +10MB | ❌ (search p95=54s pre-fix) |
-| ChromaDB | 11907/100000 | 6.6 | 4.4s | 10s | +3.5GB | ❌ (in-process EphemeralClient limit) |
+| **Redis** | **100000/100000** | **138.2** | **98ms** | **1192ms** | **+205MB** | **✅ success (root-cause fixed!)** |
+| ChromaDB | 11907/100000 | 6.6 | 4.4s | 10s | +3.5GB | ❌ (in-process `chromadb.EphemeralClient` upstream limit) |
 
-After the v6 inverted-index commit, Redis search dropped from 28s p95
-to <100ms p95; the next CI run is expected to flip Redis to ✅. Full
-perf architecture in [docs/REDIS_STORE.md](docs/REDIS_STORE.md).
+**Redis perf journey** (3 commits): `7.6 ops/sec` (pre-v6, RLock) →
+`16.1 ops/sec` (cc1c7ed, +inverted index, but 2 pipelines) → **`138.2 ops/sec`**
+(`5331390`, 1-pipeline store + `k*10` candidate cap, **18.2x**).
+Search p50 went `28s → 778ms` (36x). See [docs/REDIS_STORE.md](docs/REDIS_STORE.md)
+for the full architecture (no outer lock, single-pipeline writes, inverted token
+index, candidate-set cap).
+
+**ChromaDB is the only A- gap** — its 100k stress failure is from
+`chromadb.EphemeralClient` being in-process, not from UAMS code.
+Next step is `PersistentClient` or a service container (independent
+decision).
 
 ```bash
 # 100k ops against PostgreSQL with 32 concurrent workers

@@ -56,7 +56,7 @@ UAMS 將記憶基礎設施從智能體框架和應用領域中解耦出來。它
 | **Token 預算注入** | 自動將檢索結果壓縮到 LLM 上下文視窗限制內 |
 | **可插拔儲存** | 記憶體儲存（預設）、ChromaDB、SQLite、PostgreSQL+pgvector、Neo4j |
 | **remember() 語意級去重（opt-in）** | 新事實與既有語意記憶餘弦相似度 ≥ `remember_dedup_threshold` 時,回傳既有 `MemoryId` 而不存新副本 |
-| **100k 並發壓測（A+ 必備）** | `benchmarks/stress_test.py` 跑 100k 操作並發,JSON 報告上傳 CI artifact ([docs/STRESS_TEST.md](docs/STRESS_TEST.md))。v6 修後 PostgreSQL + Neo4j 跑到 100k/100k ops 0% err,詳見 [docs/STRESS_TEST.md](docs/STRESS_TEST.md) "Diagnosed bugs" 段 |
+| **100k 並發壓測（A+ 必備）** | `benchmarks/stress_test.py` 跑 100k 操作並發,JSON 報告上傳 CI artifact ([docs/STRESS_TEST.md](docs/STRESS_TEST.md))。v6 修後 **PostgreSQL + Neo4j + Redis** 全部 100k/100k ops 0% err,Redis 從 7.6 ops/s 優化到 138.2 ops/s（18.2x）。詳見 [docs/STRESS_TEST.md](docs/STRESS_TEST.md) "Diagnosed bugs" 段 |
 | **框架無關** | 相容 Claude、GPT、LangChain、AutoGen 或自研智能體 |
 
 ---
@@ -392,7 +392,7 @@ universal-agent-memory/
 │   ├── research_agent.py
 │   ├── multi_agent.py
 │   └── _token_compression_demo.py
-├── tests/                  # 426 個測試
+├── tests/                  # 427 個測試
 │   ├── test_system.py
 │   ├── test_chaos.py
 │   ├── test_aplus.py
@@ -464,7 +464,7 @@ python tests/test_system.py
 | **6 後端真實驗證(CI 9/9 green)** | **PG / ChromaDB / Redis / Neo4j / SQLite / InMemory 全部以真實 service container 跑通** |
 | **級聯刪除** | **三策略 + visit-set + 最大深度上限 + 跨層隔離 + 最佳努力刪除 + JSONL 稽核** |
 
-**測試規模**:426 個測試(本地 32 skip:無 PG/Redis/Neo4j service 時跳過真實後端;CI 全跑通)。v6 新增 51 個:SQLite 並發 3 + FTS5 phrase 6 + Redis inverted index 4 + 100k stress 整合 11 + 其他 27。
+**測試規模**:427 個測試(本地 32 skip:無 PG/Redis/Neo4j service 時跳過真實後端;CI 全跑通)。v6 新增 52 個:SQLite 並發 3 + FTS5 phrase 6 + Redis inverted index 5 + 100k stress 整合 11 + 其他 27。
 
 ---
 

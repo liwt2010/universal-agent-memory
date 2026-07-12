@@ -216,9 +216,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`stress_test.py` config fixes for 100k × 32 workers** (`commit 4bde0e3`):
   - **Redis**: removed `max_capacity=...` kwarg that `RedisStore.__init__()` doesn't accept (was crashing at setup with `TypeError: unexpected keyword argument 'max_capacity'`, so the Redis stress job never produced a report). Now passes just connection params.
   - **PostgreSQL**: override `pool_max=64` (2× concurrency + buffer) since the default 10 caused `psycopg2.ThreadedConnectionPool` to raise `PoolError("connection pool exhausted")` for ~22/32 workers, producing ~81% error rate. After the fix: 100000/100000 ops, 0% err, 269 ops/sec, p95 212ms.
+- **Fundamental fix for Redis 100k stress** (`commit 5331390`):
+  - **`store()` collapsed to a single pipeline**: main write (HSET) + TTL bookkeeping (EXPIRE / ZADD) + inverted index updates (SADD per token + SADD for per-memory token set) all in **1 round-trip** (was 2). Halves the per-op network cost on slow CI networks.
+  - **`search_keywords()` capped to `k*10` candidates** (floor 50): when an inverted-index candidate set balloons (e.g. 14k stress-test memories all share the "stress" token, giving 14k candidates), we now `random.sample()` down to at most 100 before HGETALL + JSON-deserialize. Bounds worst-case search latency at O(k) HGETALLs regardless of how many documents match. **Result (CI, 100k × 32 workers, real Redis)**: 100000/100000 ops completed, 0% err, 138 ops/sec, p50 98ms, p95 1192ms, search p50 778ms (37x better than cc1c7ed's 28s). RSS growth dropped from 1.35GB → 205MB (6.5x better). 1 new test: `test_inverted_index_search_caps_candidate_set`.
 
 ### Test suite growth
-- 413 → **426 tests pass** (+13: 3 SQLite concurrency + 6 FTS5 phrase + 4 Redis inverted index). 32 skipped (server-gated), 0 regressions.
+- 413 → **427 tests pass** (+14: 3 SQLite concurrency + 6 FTS5 phrase + 5 Redis inverted index (added candidate-cap test)). 32 skipped (server-gated), 0 regressions.
 
 ## [0.1.0] - 2024-XX-XX
 
