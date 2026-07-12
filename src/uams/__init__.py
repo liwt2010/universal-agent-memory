@@ -5,7 +5,7 @@ Decoupled from coding, applicable to personal assistants, NPCs,
 customer service, research agents, multi-agent systems, etc.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"
 
 from uams.system import UniversalMemorySystem
 from uams.core.enums import MemoryType, EventType, PrivacyLevel
