@@ -12,6 +12,7 @@ Bug 2: FTS5 MATCH treats '-' as NOT operator, so search_keywords('state-of-the-a
 
 import os
 import shutil
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -219,6 +220,122 @@ class TestSQLiteFTS5PhraseQuery(unittest.TestCase):
         )
         # Empty
         self.assertEqual(SQLiteStore._sanitize_fts5_query(""), '""')
+
+
+class TestSQLiteRetrieveRoundtrip(unittest.TestCase):
+    """P0-A regression: SQLiteStore.retrieve() used to issue a redundant
+    `conn.execute("BEGIN")` after the SELECT had already opened an
+    implicit read transaction. Python's default sqlite3 isolation
+    mode rejects that with
+    `OperationalError: cannot start a transaction within a transaction`,
+    which the outer except swallowed — every successful retrieve()
+    returned None silently, breaking recency-aware retrieval.
+
+    The fix removes the redundant BEGIN and reuses the implicit
+    transaction for the accessed_at UPDATE.
+    """
+
+    def test_retrieve_returns_stored_memory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "retr.db")
+            store = SQLiteStore(db_path=path, tier_name="retr")
+            try:
+                mem = _make_memory("hello world")
+                store.store(mem)
+
+                # Was returning None pre-fix.
+                retrieved = store.retrieve(str(mem.id))
+                self.assertIsNotNone(retrieved)
+                self.assertEqual(retrieved.payload.raw, "hello world")
+            finally:
+                store.close()
+
+    def test_retrieve_updates_accessed_at(self):
+        """retrieve() must persist the accessed_at update — the fix
+        keeps the UPDATE+COMMIT but reuses the implicit transaction
+        opened by SELECT."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "accessed.db")
+            store = SQLiteStore(db_path=path, tier_name="acc")
+            try:
+                mem = _make_memory("x")
+                store.store(mem)
+
+                # First retrieve should bump accessed_at.
+                store.retrieve(str(mem.id))
+
+                # Open a second connection and read back the row directly
+                # (bypass the store's caching) to verify accessed_at is set.
+                import sqlite3
+                conn = sqlite3.connect(path)
+                try:
+                    row = conn.execute(
+                        "SELECT accessed_at FROM acc_memories WHERE id = ?",
+                        (str(mem.id),),
+                    ).fetchone()
+                finally:
+                    conn.close()
+                self.assertIsNotNone(row)
+                # accessed_at was 0.0 initially; after retrieve it must be > 0.
+                self.assertGreater(row[0], 0.0)
+            finally:
+                store.close()
+
+    def test_retrieve_missing_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "missing.db")
+            store = SQLiteStore(db_path=path, tier_name="miss")
+            try:
+                self.assertIsNone(store.retrieve("does-not-exist"))
+            finally:
+                store.close()
+
+
+class TestSQLiteStoreCloseInflight(unittest.TestCase):
+    """P1-CON-3: SQLiteStore.close() used to only drain the pool queue.
+    If thread T1 was mid-store() at the moment close() ran, T1's
+    connection was not in the queue. After T1 finished, it called
+    _return_connection() which pushed the now-closed conn back into
+    the queue. A later caller would get a 'Cannot operate on a closed
+    database' error. The fix tracks all conns via _all_conns and
+    makes _return_connection() close-or-pool based on _available.
+    """
+
+    def test_in_flight_connection_closed_on_return_after_shutdown(self):
+        """After close(), an in-flight thread that returns its
+        connection must not push it back into the queue."""
+        import threading
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "inflight.db")
+            store = SQLiteStore(db_path=path, tier_name="inflight", pool_size=2)
+
+            # Take a conn out of the pool manually (simulates an
+            # in-flight thread that hasn't returned yet).
+            conn = store._pool.get_nowait()
+            self.assertIn(conn, store._all_conns)
+
+            # Shutdown. close() should mark _available=False and close
+            # the conn we took out (via _all_conns iteration).
+            store.close()
+            self.assertFalse(store._available)
+            # Trying to use the conn now must raise.
+            with self.assertRaises(sqlite3.ProgrammingError):
+                conn.execute("SELECT 1")
+
+    def test_post_shutdown_return_does_not_repopulate_pool(self):
+        """_return_connection() must NOT put a conn back after close()."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "return.db")
+            store = SQLiteStore(db_path=path, tier_name="ret", pool_size=1)
+
+            conn = store._pool.get_nowait()
+            store.close()
+
+            # Simulate the in-flight thread now returning its conn.
+            store._return_connection(conn)
+
+            # Pool should still be empty — the conn was closed, not returned.
+            self.assertTrue(store._pool.empty())
 
 
 if __name__ == "__main__":

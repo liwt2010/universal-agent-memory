@@ -10,7 +10,7 @@ import json
 import sqlite3
 import threading
 from queue import Queue
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Optional, Set, Tuple
 
 from uams.storage.base import MemoryStore
 from uams.core.models import Memory, MemoryId, TemporalAnchor, AgentContext, MemoryPayload, MemoryMetadata, Relation
@@ -40,10 +40,16 @@ class SQLiteStore(MemoryStore):
         self._lock = threading.RLock()
         self._pool: Queue[sqlite3.Connection] = Queue(maxsize=pool_size)
         self._available = True
+        # Track every connection ever handed out so close() can also
+        # close connections held by in-flight threads (which the pool
+        # itself can't see — they're between _get_connection() and
+        # _return_connection() at the moment close() runs).
+        self._all_conns: Set[sqlite3.Connection] = set()
 
         # Initialize pool connections
         for _ in range(pool_size):
             conn = self._create_connection()
+            self._all_conns.add(conn)
             self._pool.put(conn)
 
         self._ensure_schema()
@@ -64,12 +70,30 @@ class SQLiteStore(MemoryStore):
         return self._pool.get()
 
     def _return_connection(self, conn: sqlite3.Connection) -> None:
+        # If close() already ran, this connection is being returned by
+        # an in-flight thread that started before shutdown. Close it
+        # here so it doesn't leak — and don't put it back in the pool,
+        # which is being drained.
+        if not self._available:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return
         try:
             # Rollback any uncommitted transaction before returning
             conn.execute("ROLLBACK")
         except Exception:
             pass
-        self._pool.put(conn)
+        try:
+            self._pool.put_nowait(conn)
+        except Exception:
+            # Pool is full / closed; close the connection rather than
+            # silently drop it.
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def _ensure_schema(self) -> None:
         conn = self._get_connection()
@@ -290,14 +314,24 @@ class SQLiteStore(MemoryStore):
     def retrieve(self, memory_id: str) -> Optional[Memory]:
         conn = self._get_connection()
         try:
+            # The SELECT implicitly opens a read transaction in non-WAL
+            # mode (Python's default sqlite3 isolation mode). In WAL mode
+            # a pure SELECT does NOT open a transaction — `in_transaction`
+            # stays False — so the redundant `BEGIN` that used to live
+            # here was a latent footgun: in legacy journal mode it would
+            # raise `OperationalError: cannot start a transaction within
+            # a transaction` and the outer `except Exception` would
+            # swallow it, turning every retrieve() hit into None.
+            #
+            # The fix removes the redundant BEGIN and reuses whatever
+            # implicit transaction state already exists. This is safe in
+            # both WAL and legacy journal modes.
             cursor = conn.execute(
                 f"SELECT * FROM {self._tier_name}_memories WHERE id = ?",
                 (memory_id,)
             )
             row = cursor.fetchone()
             if row:
-                # Update accessed_at in a separate transaction
-                conn.execute("BEGIN")
                 conn.execute(
                     f"UPDATE {self._tier_name}_memories SET accessed_at = ? WHERE id = ?",
                     (TemporalAnchor().created_at, memory_id)
@@ -450,13 +484,34 @@ class SQLiteStore(MemoryStore):
                 self._return_connection(conn)
 
     def close(self) -> None:
-        """Close all connections in the pool."""
+        """Close all connections in the pool.
+
+        Closes connections sitting in the queue AND any that were
+        checked out by in-flight threads at the moment close() ran —
+        those connections are tracked via ``self._all_conns``. The
+        _return_connection() helper checks ``self._available`` and
+        closes the connection instead of putting it back, so post-close
+        return-from-thread can't revive a dead pool.
+        """
         with self._lock:
+            # Drain the queue first.
             while not self._pool.empty():
                 try:
                     conn = self._pool.get_nowait()
                     conn.close()
                 except Exception:
                     pass
+            # Mark unavailable BEFORE closing in-flight connections —
+            # _return_connection checks this flag to decide whether to
+            # close-or-pool the returned conn.
             self._available = False
+            # Close every connection ever created. After this point,
+            # any thread holding a connection will get an error on its
+            # next use; we accept that as the cost of a hard shutdown.
+            for conn in list(self._all_conns):
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            self._all_conns.clear()
             logger.info("SQLiteStore closed: db=%s tier=%s", self._db_path, self._tier_name)

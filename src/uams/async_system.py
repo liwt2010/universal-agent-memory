@@ -5,11 +5,12 @@ Uses asyncio.Lock for concurrency safety instead of threading.RLock.
 """
 
 import asyncio
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 from uams.system import UniversalMemorySystem
 from uams.core.models import AgentContext, AgentEvent, Memory, MemoryId
 from uams.multi_agent.coordinator import Signal
+from uams.pipeline.cascade import CascadeReport, CascadeStrategy
 from uams.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -56,10 +57,30 @@ class AsyncUniversalMemorySystem:
                 None, self._ums.recall, query, context, budget_tokens
             )
 
-    async def forget(self, memory_id: str) -> bool:
+    async def forget(
+        self,
+        memory_id: str,
+        *,
+        cascade: Union[CascadeStrategy, str] = CascadeStrategy.BIDIRECTIONAL,
+        max_depth: Optional[int] = None,
+        in_edge_mode: Optional[str] = None,
+    ) -> CascadeReport:
+        """Forget a memory with configurable cascade.
+
+        Mirrors the sync ``UniversalMemorySystem.forget()`` signature:
+        returns a ``CascadeReport`` (NOT a bool). See
+        ``docs/CASCADE_FORGET.md`` for the cascade strategy enum and
+        GDPR-aligned workflow.
+        """
         async with self._lock:
             return await asyncio.get_event_loop().run_in_executor(
-                None, self._ums.forget, memory_id
+                None,
+                lambda: self._ums.forget(
+                    memory_id,
+                    cascade=cascade,
+                    max_depth=max_depth,
+                    in_edge_mode=in_edge_mode,
+                ),
             )
 
     async def inject_context(

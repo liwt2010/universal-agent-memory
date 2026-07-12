@@ -115,6 +115,12 @@ class UniversalMemorySystem(EventHandler):
         # Session tracking: session_id -> list of events
         self._session_events: Dict[str, List[AgentEvent]] = {}
         self._session_lock = threading.RLock()
+        # Process-wide lock for decay_sweep: prevents two concurrent sweeps
+        # (e.g. a slow SQLite sweep that runs >60s colliding with the next
+        # tick of the docker-entrypoint loop, or two callers triggering
+        # sweeps from different threads) from racing through the store
+        # delete_expired() implementations.
+        self._sweep_lock = threading.Lock()
 
     def _build_compression_engine(self):
         """Construct the compression engine.
@@ -317,9 +323,18 @@ class UniversalMemorySystem(EventHandler):
                 from uams.storage.sqlite import SQLiteStore
                 return {
                     MemoryType.WORKING: InMemoryStore(max_capacity=max_cap),  # Working stays hot in-memory
-                    MemoryType.EPISODIC: SQLiteStore(self._config.sqlite_path, "episodic"),
-                    MemoryType.SEMANTIC: SQLiteStore(self._config.sqlite_path, "semantic"),
-                    MemoryType.PROCEDURAL: SQLiteStore(self._config.sqlite_path, "procedural"),
+                    MemoryType.EPISODIC: SQLiteStore(
+                        self._config.sqlite_path, "episodic",
+                        pool_size=self._config.sqlite_pool_size,
+                    ),
+                    MemoryType.SEMANTIC: SQLiteStore(
+                        self._config.sqlite_path, "semantic",
+                        pool_size=self._config.sqlite_pool_size,
+                    ),
+                    MemoryType.PROCEDURAL: SQLiteStore(
+                        self._config.sqlite_path, "procedural",
+                        pool_size=self._config.sqlite_pool_size,
+                    ),
                 }
             except Exception:
                 logger.exception("Failed to initialize SQLiteStore, falling back to InMemoryStore")
@@ -751,7 +766,17 @@ class UniversalMemorySystem(EventHandler):
             return ""
 
     def decay_sweep(self) -> int:
-        """Run forgetting sweep. Returns count of deleted memories."""
+        """Run forgetting sweep. Returns count of deleted memories.
+
+        Process-wide lock: a second concurrent call returns 0 immediately
+        (the sweep already in progress will account for the new tick's
+        scope on its next run). The 0-return signal lets callers
+        distinguish "sweep skipped because one is running" from
+        "sweep ran and evicted 0 memories".
+        """
+        if not self._sweep_lock.acquire(blocking=False):
+            logger.debug("decay_sweep() skipped: another sweep is in progress")
+            return 0
         try:
             count = self._forgetting.sweep()
             logger.info("decay_sweep() evicted %d memories", count)
@@ -759,6 +784,8 @@ class UniversalMemorySystem(EventHandler):
         except Exception:
             logger.exception("decay_sweep() failed")
             return 0
+        finally:
+            self._sweep_lock.release()
 
     # --- Multi-agent primitives ---
 

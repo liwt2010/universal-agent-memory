@@ -228,3 +228,22 @@ class ChromaDBStore(MemoryStore):
     def delete_expired(self) -> int:
         # ChromaDB doesn't have TTL natively; implement via metadata filtering
         return 0
+
+    def close(self) -> None:
+        """Release the underlying ChromaDB client.
+
+        ``chromadb`` exposes ``reset()`` to drop the in-memory state
+        and any PersistentClient connections. Idempotent — calling on
+        an already-closed client should not raise.
+        """
+        if self._client is None:
+            return
+        try:
+            # ChromaDB 0.4+ has reset(); PersistentClient also supports it.
+            # For EphemeralClient this is the recommended cleanup.
+            if hasattr(self._client, "reset"):
+                self._client.reset()
+        except Exception:
+            logger.exception("ChromaDB close/reset failed")
+        self._client = None
+        logger.debug("ChromaDBStore closed")

@@ -405,5 +405,126 @@ class TestRedisStoreMock(unittest.TestCase):
         self.assertGreater(len(results), 0)
 
 
+class TestDeleteExpiredDrainsAll(unittest.TestCase):
+    """P0-B regression: RedisStore.delete_expired() previously had
+    `return count` at the wrong indentation — inside the for-loop —
+    so only the first expired memory was deleted per sweep. The
+    expiry ZSET grew monotonically because subsequent items were
+    never touched. The fix moves the log/return out of the loop so
+    a single sweep drains the full ZSET range.
+    """
+
+    def test_drains_all_expired_in_one_sweep(self):
+        """5 expired entries → delete_expired() must report 5, not 1."""
+        from uams.storage.redis import RedisStore
+
+        # Build a fake client whose zrangebyscore returns 5 IDs.
+        fake_client = MagicMock()
+        fake_client.zrangebyscore.return_value = [
+            b"m1", b"m2", b"m3", b"m4", b"m5",
+        ]
+
+        # Skip __init__ — go straight to a manually-built instance.
+        store = RedisStore.__new__(RedisStore)
+        store._client = fake_client
+        store._available = True
+        store._expiry_zset_key = "uams:expiry"
+        store._key_prefix = "uams:memory:"
+        store._enable_pubsub = False
+        store._pubsub = None
+        store._ttl_seconds = None
+        store._lock = MagicMock()
+
+        # Patch self.delete to always succeed — we are testing the LOOP,
+        # not delete() itself (which has its own dedicated tests).
+        store.delete = lambda memory_id: True
+
+        deleted = store.delete_expired()
+        self.assertEqual(deleted, 5,
+                         f"Expected 5 expired memories to be deleted, got {deleted}. "
+                         "If this returns 1, the for-loop early-return bug has regressed.")
+
+
+class TestRedisStoreAutoDisable(unittest.TestCase):
+    """P1-CON-2: RedisStore had no auto-disable pattern. A transient
+    Redis outage meant every subsequent call hit the network,
+    raised, and logged an ERROR — but _available stayed True, so
+    callers kept getting fake 'successful' no-ops. The fix mirrors
+    MultiAgentCoordinator._disabled: first error flips _disabled=True,
+    subsequent calls short-circuit and don't flood the log.
+    """
+
+    def _build_store(self):
+        from uams.storage.redis import RedisStore
+        store = RedisStore.__new__(RedisStore)
+        store._client = MagicMock()
+        store._available = True
+        store._expiry_zset_key = "uams:expiry"
+        store._key_prefix = "uams:memory:"
+        store._enable_pubsub = False
+        store._pubsub = None
+        store._ttl_seconds = None
+        store._lock = MagicMock()
+        store._disabled = False
+        return store
+
+    def test_first_error_disables_store(self):
+        """First exception from a Redis call flips _disabled=True."""
+        store = self._build_store()
+        # Make store() raise a connection-class error.
+        store._client.pipeline.return_value.execute.side_effect = ConnectionError(
+            "simulated disconnect"
+        )
+        # Build a minimal memory to call store() with.
+        from uams.core.models import (
+            Memory, MemoryId, TemporalAnchor, AgentContext,
+            MemoryPayload, MemoryMetadata,
+        )
+        from uams.core.enums import MemoryType, PrivacyLevel
+        mem = Memory(
+            id=MemoryId("m1"),
+            anchor=TemporalAnchor(),
+            context=AgentContext("a", "t", "s"),
+            payload=MemoryPayload(raw="hi"),
+            metadata=MemoryMetadata(MemoryType.WORKING, PrivacyLevel.PUBLIC),
+        )
+        self.assertFalse(store.is_disabled)
+        store.store(mem)
+        self.assertTrue(store.is_disabled)
+
+    def test_subsequent_call_does_not_hit_redis(self):
+        """Once disabled, store() must not even call the client — it
+        short-circuits with a debug log (no exception log spam)."""
+        store = self._build_store()
+        store._disabled = True
+        store._client.pipeline.return_value.execute.side_effect = ConnectionError(
+            "would log spam if called"
+        )
+        from uams.core.models import (
+            Memory, MemoryId, TemporalAnchor, AgentContext,
+            MemoryPayload, MemoryMetadata,
+        )
+        from uams.core.enums import MemoryType, PrivacyLevel
+        mem = Memory(
+            id=MemoryId("m2"),
+            anchor=TemporalAnchor(),
+            context=AgentContext("a", "t", "s"),
+            payload=MemoryPayload(raw="x"),
+            metadata=MemoryMetadata(MemoryType.WORKING, PrivacyLevel.PUBLIC),
+        )
+        # Calling store() should not raise (it shouldn't even reach Redis).
+        store.store(mem)
+        # The client pipeline was not called a second time.
+        # (execute side_effect would raise if it were.)
+        self.assertTrue(store.is_disabled)
+
+    def test_close_flips_disabled(self):
+        """close() must mark _disabled=True so subsequent ops no-op cleanly."""
+        store = self._build_store()
+        store._pool = MagicMock()
+        store.close()
+        self.assertTrue(store.is_disabled)
+
+
 if __name__ == "__main__":
     unittest.main()

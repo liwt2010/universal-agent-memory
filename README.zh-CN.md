@@ -392,7 +392,7 @@ universal-agent-memory/
 │   ├── research_agent.py
 │   ├── multi_agent.py
 │   └── _token_compression_demo.py
-├── tests/                  # 427 个测试
+├── tests/                  # 456 个测试
 │   ├── test_system.py
 │   ├── test_chaos.py
 │   ├── test_aplus.py
@@ -464,7 +464,7 @@ python tests/test_system.py
 | **6 后端真实验证(CI 9/9 green)** | **PG / ChromaDB / Redis / Neo4j / SQLite / InMemory 全部真实 service 跑通** |
 | **级联删除** | **三策略 + visit-set + 最大深度上限 + 跨层隔离 + 最佳努力删除 + JSONL 审计** |
 
-**测试规模**:427 测试(本地 32 skip:无 PG/Redis/Neo4j service 时跳过真实后端;CI 上全部跑通)。v6 新增 52 个:SQLite 并发 3 + FTS5 phrase 6 + Redis inverted index 5 + 100k stress 集成 11 + 其他 27。
+**测试规模**:456 测试(本地 32 skip:无 PG/Redis/Neo4j service 时跳过真实后端;CI 上全部跑通)。7-12 审计加固新增 29 个:信号队列 4 + Redis auto-disable 3 + SQLite close 2 + backup 错误分类 2 + cascade 审计日志 2 + Async forget 4 + SQLite pool 3 + SIGTERM 3 + decay_sweep 锁 2 + SQLite retrieve 回归 3。
 
 ---
 

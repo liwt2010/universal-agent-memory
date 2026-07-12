@@ -63,6 +63,13 @@ class MultiAgentCoordinator:
     Thread-safe with RLock. Supports Redis distributed locks for multi-process deployments.
     """
 
+    # Bound on the in-memory signal queue. Long-running multi-agent
+    # processes that emit broadcast signals would otherwise grow
+    # self._signals monotonically (read_signals only marks them as
+    # read; it never removes). When the queue exceeds this cap, the
+    # oldest signals are dropped on append.
+    MAX_SIGNALS = 10000
+
     def __init__(self, shared_store: MemoryStore, redis_client=None):
         self._shared = shared_store
         self._leases: Dict[str, Lease] = {}
@@ -204,9 +211,27 @@ class MultiAgentCoordinator:
             return False
 
     def send_signal(self, signal: Signal) -> None:
-        """Send a signal to another agent or broadcast."""
+        """Send a signal to another agent or broadcast.
+
+        The signal queue is bounded to ``MAX_SIGNALS``: when a new
+        signal would push the queue over the cap, the oldest signal
+        is dropped. This prevents unbounded memory growth in
+        long-running agents that emit broadcast signals faster than
+        they are consumed.
+        """
         with self._lock:
             self._signals.append(signal)
+            if len(self._signals) > self.MAX_SIGNALS:
+                dropped = len(self._signals) - self.MAX_SIGNALS
+                # Drop the oldest `dropped` signals. We do not preserve
+                # them elsewhere; broadcast signals that no one read in
+                # the last MAX_SIGNALS emissions are not delivered.
+                self._signals = self._signals[dropped:]
+                logger.warning(
+                    "MultiAgentCoordinator signal queue exceeded cap (%d); "
+                    "dropped %d oldest unread signals",
+                    self.MAX_SIGNALS, dropped,
+                )
             logger.debug(
                 "Signal sent from %s to %s (type=%s)",
                 signal.sender, signal.recipient, signal.type

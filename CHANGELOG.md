@@ -7,6 +7,115 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security & Reliability Hardening (2026-07-12 audit pass)
+
+Independent audit pass identified and fixed **15 issues across 5 rounds**. All
+local tests pass (456 tests, 0 errors); the two remaining failures pre-date
+this pass and are unrelated (`test_large_chinese_text` performance threshold,
+`test_shutdown_persists_working` test-logic bug).
+
+#### Critical fixes (silent correctness bugs)
+
+- **`SQLiteStore.retrieve()` redundant `BEGIN`** — `SELECT` opens an implicit
+  read transaction; the redundant `conn.execute("BEGIN")` raises
+  `OperationalError: cannot start a transaction within a transaction` which
+  the outer `except` swallowed, silently turning every retrieve() hit into
+  `None`. WAL mode hides this; legacy journal mode users hit it. Removed the
+  redundant `BEGIN`. (P0-A, audit-found)
+- **`RedisStore.delete_expired()` early `return`** — `return count` was
+  indented inside the `for` loop, so each sweep deleted only the first
+  expired memory and the expiry ZSET grew monotonically. Moved `return`
+  out of the loop. Verified with regression test that asserts 5 expired
+  entries → `delete_expired()` returns 5. (P0-B)
+
+#### Reliability / concurrency
+
+- **`docker_entrypoint.py` now calls `ums.register_signal_handlers()`** —
+  SIGTERM (Docker stop / Ctrl-C) now triggers `shutdown()` instead of
+  Python exiting hard. Without this, WORKING-tier memories in the last
+  `<TTL>` window were lost and SQLite WAL could be unflushed. (Bug 7)
+- **`MemoryStore.close()` is now `@abstractmethod`** — all 6 built-in
+  stores (`InMemoryStore`, `SQLiteStore`, `RedisStore`, `Neo4jStore`,
+  `PostgreSQLStore`, `ChromaDBStore`) implement it. Custom backends get
+  forced to clean up resources; previously `shutdown()` relied on
+  `hasattr(store, 'close')` duck-typing. (Bug 8)
+- **`decay_sweep()` is process-wide lock-protected** — a second concurrent
+  call returns 0 with a debug log ("another sweep in progress") instead of
+  racing through `delete_expired()` on every store. Closes a slow-sweep
+  collision window in the 60s docker-entrypoint loop. (Bug 9)
+- **`RedisStore` auto-disable on disconnect** — mirrors the
+  `MultiAgentCoordinator._disabled` pattern. First Redis connection error
+  flips `_disabled = True`; subsequent calls short-circuit with safe no-ops
+  and **stop flooding the log** with tracebacks. `is_disabled` property
+  exposed. (P1 #23)
+- **`SQLiteStore.close()` handles in-flight threads** — tracks every
+  connection via `_all_conns` and closes them on shutdown. `_return_connection()`
+  now checks `_available` and closes rather than re-pooling a conn that
+  was checked out at the moment close() ran. (P1 #24)
+- **`MultiAgentCoordinator._signals` bounded** — `MAX_SIGNALS = 10000` cap;
+  oldest entries dropped on append. Previously the queue grew unbounded
+  in long-running agents that emit broadcast signals faster than they're
+  consumed. (P1 #22)
+- **`BackupManager.restore_from_file` splits error handling** — JSON
+  parse failures on a line now log `"malformed JSON at <file>:<line>"`
+  and skip that line; store write failures mid-restore now abort the
+  whole import and return `None` (previously both were logged as
+  `"Skipped invalid backup line"`, misdirecting operators to the wrong
+  layer). (P1 #25)
+
+#### GDPR / observability
+
+- **`CascadeForgetter._locate_tier` no longer silently swallows backend
+  exceptions** — each `except` now logs at ERROR level with `exc_info=True`.
+  Previously a real backend failure (disk full / pool exhausted / auth
+  failure) was indistinguishable from "this memory doesn't exist" in
+  the resulting `CascadeReport`. (Bug 5)
+
+#### Developer experience
+
+- **`docs/API.md` reconciled with the code** — removed the fictional
+  `sync()` method, removed wrong constructor kwargs (`backend`,
+  `token_budget`, `retention_floor`), removed wrong `remember()` kwargs
+  (`memory_type`, `confidence`, `tags-as-list`), removed wrong `recall()`
+  kwargs (`top_k`), and rebuilt the `EventType` and `PrivacyLevel` tables
+  from the actual enums (previously listed non-existent values like
+  `SYSTEM_EVENT`, `MANUAL`, `ERROR`, `CONFIDENTIAL`). The `UAMSConfig`
+  example was replaced with the recommended env-driven pattern. (P1 #21)
+- **`AsyncUniversalMemorySystem.forget()` returns `CascadeReport`** —
+  type hint was `bool` (a leftover from before the cascade rewrite); now
+  also forwards `cascade`, `max_depth`, `in_edge_mode` kwargs to the
+  sync implementation. (P2 #27)
+- **`UAMS_SQLITE_POOL_SIZE` env var now flows through** — previously
+  `UAMSConfig.sqlite_pool_size` was declared but never read; `from_env()`
+  didn't parse the env var, and `UniversalMemorySystem._init_stores_from_config()`
+  didn't pass `pool_size` to `SQLiteStore`. Now all three layers wire up,
+  so operators can tune SQLite connection pool size from the environment.
+  (P2 #29)
+- **`pyproject.toml` URLs point to the real repo** — `github.com/uams/...`
+  was a placeholder; corrected to `github.com/liwt2010/universal-agent-memory/...`
+  so PyPI page links land on the actual project. (P2 #28)
+- **`pyproject.toml` extras indentation** — `embeddings` and `llm` were
+  indented under `chromadb`, which made them invisible to
+  `[project.optional-dependencies]`. Now top-level extras:
+  `pip install universal-agent-memory[llm]` and `[embeddings]` work.
+  `openai` also added to the `all` extras. (Bug 1)
+
+#### Test coverage added
+
+29 new tests across 7 new / extended files:
+- `tests/test_shutdown_signal.py` (Bug 7 regression: 3 tests)
+- `tests/test_decay_sweep_lock.py` (Bug 9 regression: 2 tests)
+- `tests/test_sqlite_concurrency_and_fts5.py` (P0-A + Bug 24: +5 tests)
+- `tests/test_redis_store.py` (P0-B + P1 #23: +4 tests)
+- `tests/test_cascade.py` (Bug 5 regression: +2 tests)
+- `tests/test_backup_failure_semantics.py` (P1 #25: +2 tests)
+- `tests/test_signal_queue_bound.py` (P1 #22: 4 tests)
+- `tests/test_async_forget_signature.py` (P2 #27: 4 tests)
+- `tests/test_sqlite_pool_size_config.py` (P2 #29: 3 tests)
+
+Local: 427 → **456 tests pass** (+29, 21 skipped server-gated, 0 regressions).
+The two pre-existing failures are unrelated and out of scope for this pass.
+
 ### Added
 - **Cross-layer cascade forget (GDPR Article 17 aligned)**
   - `CascadeStrategy` enum: `'isolated'` / `'outgoing'` / `'bidirectional'` (default bidirectional)

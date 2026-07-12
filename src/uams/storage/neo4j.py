@@ -418,3 +418,20 @@ class Neo4jStore(MemoryStore):
         except Exception:
             logger.exception("Neo4j get_related_memories failed")
             return []
+
+    def close(self) -> None:
+        """Close the underlying Neo4j driver.
+
+        ``neo4j.GraphDatabase.driver.close()`` is the recommended cleanup
+        path — it releases the connection pool to the Bolt server.
+        Idempotent: calling on an already-closed driver is a no-op.
+        """
+        if self._driver is None:
+            return
+        try:
+            self._driver.close()
+        except Exception:
+            logger.exception("Neo4j driver close failed")
+        self._driver = None
+        self._available = False
+        logger.debug("Neo4jStore closed")

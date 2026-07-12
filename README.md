@@ -2,12 +2,12 @@
   <img src="https://img.shields.io/badge/version-0.1.0-blue.svg" alt="Version 0.1.0">
   <img src="https://img.shields.io/badge/python-3.9%2B-blue.svg" alt="Python 3.9+">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT">
-  <img src="https://img.shields.io/badge/tests-427%20passing-brightgreen.svg" alt="427 Tests Passing">
+  <img src="https://img.shields.io/badge/tests-456%20passing-brightgreen.svg" alt="456 Tests Passing">
   <img src="https://img.shields.io/badge/token%20compression-72%25%20LLM%20mode-orange.svg" alt="Token Compression: 72% with LLM mode (default heuristic ≈ 0%)">
   <img src="https://img.shields.io/badge/embeddings-pluggable-blueviolet.svg" alt="Pluggable Embeddings">
   <img src="https://img.shields.io/badge/backends-6%20storage%20engines-blueviolet.svg" alt="6 Storage Backends">
   <img src="https://img.shields.io/badge/cascade-GDPR%2Daligned-success.svg" alt="Cascade Forget (GDPR)">
-  <img src="https://img.shields.io/badge/status-A--%20Production--ready-green.svg" alt="A- Production-ready">
+  <img src="https://img.shields.io/badge/status-Beta%20%2F%20Pre--production-lightgrey.svg" alt="Beta / Pre-production">
 </p>
 
 <h1 align="center">Universal Agent Memory System (UAMS)</h1>
@@ -34,17 +34,17 @@ It silently captures what your agent does, compresses it into a searchable memor
 
 ---
 
-## 🆕 What's new in 7-11 (v0.2)
+## 🆕 What's new in 7-12 (v0.3)
 
 | Change | What | Why |
 |--------|------|-----|
-| `CascadeStrategy.FULL_CASCADE` | New explicit opt-in strategy that **also** deletes cross-tier memories (not just records them as orphans) | True GDPR Article 17 "right to be forgotten" — data gone from every storage layer, not just the originating tier. Default `BIDIRECTIONAL` behavior unchanged. |
-| `remember_dedup_enabled` + `remember_dedup_threshold` | Opt-in semantic dedup: if a new fact is ≥ threshold cosine-similar to an existing SEMANTIC memory, return the existing `MemoryId` instead of storing a duplicate | Prevents "I like vegetables" + "I'm vegetarian" coexisting as separate memories. Requires an embedding function; falls back to "always store" with a debug log otherwise. |
-| `category_half_life_overrides` | Per-category Ebbinghaus override (e.g. `{"birthday": None, "short_term_preference": 3*86400}`) | One tier default (90d) was too coarse. Operators can tune per category from observed traffic. Empty by default — must be data-driven, see [docs/HALF_LIFE_TUNING.md](docs/HALF_LIFE_TUNING.md). |
-| `benchmarks/stress_test.py` + CI `stress-test-real-deps` | 100k-op concurrent stress test against real backends (PG / ChromaDB / Redis / Neo4j), JSON report per backend | One of the four A+ conditions. Real-world concurrency issues (lock contention, memory leaks, FTS5 edge cases) are surfaced. |
-| 7-11 hard PR (commits `8387256`–`215d348`) | `pickle.loads` RCE path → `json.loads`; `backup.py` silent 0 → `None`; `coordinator.py` Redis fail auto-disable | Security hardening before A+ pen-test. See `PRODUCTION_ASSESSMENT.md` v5. |
+| **15 bug fixes from security audit** | Hardening across SQLite, Redis, backup, cascade, coordinator, entrypoint, docs. See [CHANGELOG.md](CHANGELOG.md) for the full diff. | Independent audit pass — silent correctness bugs fixed, reliability gaps closed, API docs reconciled with code. |
+| `UAMS_SQLITE_POOL_SIZE` env var wired | Passing `pool_size` from config to `SQLiteStore` through `from_env()` | The field was declared but never read; operators setting it saw no effect. |
+| `async forget()` back in sync | Returns `CascadeReport` (not `bool`), forwards `cascade`/`max_depth`/`in_edge_mode` kwargs | Async wrapper had fallen behind the cascade rewrite. |
+| `docs/API.md` reconciled with code | Removed fictional `sync()`, wrong constructor/remember/recall params, nonexistent enum values | The reference doc was dangerously misleading; copying examples led to `TypeError`. |
+| 456 tests (+29) | 7 new test modules + 4 extended files | Regression coverage for the full audit pass. Zero new failures. |
 
-See [CHANGELOG.md](CHANGELOG.md) for the full diff.
+Includes all previous 7-11 features: `CascadeStrategy.FULL_CASCADE`, `remember_dedup_*`, `category_half_life_overrides`, `benchmarks/stress_test.py`, and the pickle→json security hardening.
 
 ---
 

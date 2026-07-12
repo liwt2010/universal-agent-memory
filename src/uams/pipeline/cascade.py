@@ -13,6 +13,9 @@ from typing import Deque, Dict, List, Optional, Set, Tuple
 from uams.config import UAMSConfig
 from uams.core.enums import MemoryType
 from uams.storage.base import MemoryStore
+from uams.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -129,13 +132,24 @@ class CascadeForgetter:
 
         Tries retrieve() on each tier in declaration order. Treats
         exceptions as "not found" so a partially-degraded backend
-        doesn't poison the cascade.
+        doesn't poison the cascade — but logs each failure at ERROR
+        so a real backend fault (disk full, pool exhausted, auth
+        failure, schema mismatch) isn't silently misclassified as
+        "this memory doesn't exist". Without this log, an operator
+        looking at `CascadeReport.is_complete = True` could conclude
+        the deletion succeeded when in fact the tier never even
+        answered.
         """
         for tier, store in self._stores.items():
             try:
                 if store.retrieve(memory_id) is not None:
                     return tier
-            except Exception:
+            except Exception as exc:
+                logger.error(
+                    "cascade._locate_tier: tier=%s retrieve(%s) raised; "
+                    "treating as not-found",
+                    tier.name, memory_id, exc_info=True,
+                )
                 continue
         return None
 

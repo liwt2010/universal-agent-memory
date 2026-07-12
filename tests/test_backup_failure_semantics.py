@@ -94,5 +94,100 @@ class TestBackupFailureSemantics(unittest.TestCase):
         self.assertIsNotNone(result)
 
 
+class TestRestoreErrorClassification(unittest.TestCase):
+    """P1-CON-4: backup.restore_from_file must distinguish JSON parse
+    failures (truncated backup → skip line) from store write failures
+    (disk full / connection lost → abort whole restore). The previous
+    implementation logged both as 'Skipped invalid backup line' which
+    misdirected operators toward the wrong layer."""
+
+    def _write_jsonl(self, tmp_path, lines):
+        path = os.path.join(tmp_path, "backup.jsonl")
+        with open(path, "w", encoding="utf-8") as f:
+            for line in lines:
+                f.write(line)
+                if not line.endswith("\n"):
+                    f.write("\n")
+        return path
+
+    def test_malformed_json_line_skipped_with_warning(self):
+        """A truncated JSON line must be skipped, not abort the restore."""
+        from uams.core.models import (
+            AgentContext, Memory, MemoryId, MemoryMetadata,
+            MemoryPayload, TemporalAnchor,
+        )
+        from uams.core.enums import MemoryType, PrivacyLevel
+
+        good = Memory(
+            id=MemoryId("good-1"),
+            anchor=TemporalAnchor(),
+            context=AgentContext("a", "t", "s"),
+            payload=MemoryPayload(raw="hello"),
+            metadata=MemoryMetadata(MemoryType.WORKING, PrivacyLevel.PUBLIC),
+        ).to_json()
+        import json as _json
+        good_line = _json.dumps(good)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_jsonl(
+                tmp,
+                ["{not valid json", good_line],
+            )
+            store = InMemoryStore(max_capacity=10)
+            manager = BackupManager(store)
+            result = manager.restore_from_file(path)
+
+        # The good line was imported despite the malformed one before it.
+        self.assertEqual(result, 1)
+        self.assertIsNotNone(store.retrieve("good-1"))
+
+    def test_store_failure_mid_restore_aborts_returns_none(self):
+        """A store failure on line N must abort and return None, not silently
+        report partial-success as '0 imported'."""
+        from uams.core.models import (
+            AgentContext, Memory, MemoryId, MemoryMetadata,
+            MemoryPayload, TemporalAnchor,
+        )
+        from uams.core.enums import MemoryType, PrivacyLevel
+
+        def make_line(mid):
+            mem = Memory(
+                id=MemoryId(mid),
+                anchor=TemporalAnchor(),
+                context=AgentContext("a", "t", "s"),
+                payload=MemoryPayload(raw=mid),
+                metadata=MemoryMetadata(MemoryType.WORKING, PrivacyLevel.PUBLIC),
+            )
+            import json as _json
+            return _json.dumps(mem.to_json())
+
+        # Build a store that fails on the 2nd store() call.
+        store = InMemoryStore(max_capacity=10)
+        original_store = store.store
+        call_count = [0]
+
+        def maybe_fail(mem):
+            call_count[0] += 1
+            if call_count[0] == 2:
+                raise IOError("simulated disk full")
+            return original_store(mem)
+
+        store.store = maybe_fail
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_jsonl(
+                tmp,
+                [make_line("m1"), make_line("m2"), make_line("m3")],
+            )
+            manager = BackupManager(store)
+            result = manager.restore_from_file(path)
+
+        # Mid-restore failure → None (not partial count, not 0).
+        self.assertIsNone(result)
+        # m1 was imported (before the failure), m3 was not.
+        self.assertIsNotNone(store.retrieve("m1"))
+        self.assertIsNone(store.retrieve("m3"))
+
+
 if __name__ == "__main__":
     unittest.main()

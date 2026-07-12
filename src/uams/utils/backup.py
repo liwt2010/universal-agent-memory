@@ -57,22 +57,45 @@ class BackupManager:
         Returns number of memories imported on success, or None on
         fatal failure (a file with zero valid lines returns 0; a file
         that could not be opened at all returns None).
+
+        Two error classes are handled distinctly:
+          - JSON decode failures on a line → that single line is
+            skipped with a WARNING (likely a truncated backup).
+          - Store write failures mid-restore (disk full, connection
+            lost, constraint violation) → the whole restore aborts
+            and returns None. Continuing past a store failure would
+            silently drop the remaining memories and misrepresent
+            "0 imported" as success.
         """
         try:
             count = 0
             with open(filepath, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
+                for line_no, raw_line in enumerate(f, start=1):
+                    line = raw_line.strip()
                     if not line:
                         continue
+                    # 1. JSON parse (data corruption / truncated line)
                     try:
                         data = json.loads(line)
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "Backup restore: skipping malformed JSON at %s:%d: %s...",
+                            filepath, line_no, line[:200],
+                        )
+                        continue
+                    # 2. Decode + store (storage layer failures abort)
+                    try:
                         mem = Memory.from_json(data)
                         if mem:
                             self._store.store(mem)
                             count += 1
                     except Exception:
-                        logger.warning("Skipped invalid backup line: %s...", line[:200])
+                        logger.exception(
+                            "Backup restore: store failed on %s line %d; "
+                            "aborting (already-imported memories remain in store)",
+                            filepath, line_no,
+                        )
+                        return None
             logger.info("Restore completed: %d memories imported from %s", count, filepath)
             return count
         except Exception:

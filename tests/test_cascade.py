@@ -35,6 +35,35 @@ except ImportError:                               # Task 2 will create this
 
 # --- Test doubles ---------------------------------------------------------
 
+class _LogCapture:
+    """Lightweight log capture that doesn't depend on global configure_logging."""
+    def __init__(self, logger, level):
+        self._logger = logger
+        self._level = level
+        self._handler = None
+        self.text = ""
+
+    def __enter__(self):
+        import logging
+        self._handler = logging.Handler(level=self._level)
+        self._handler.emit = self._emit
+        self._logger.addHandler(self._handler)
+        return self
+
+    def __exit__(self, *exc):
+        if self._handler:
+            self._logger.removeHandler(self._handler)
+        return False
+
+    def _emit(self, record):
+        self.text += self._handler.format(record) + "\n"
+
+
+def _capture_logs(logger, level="ERROR"):
+    """Return a context-manager-style helper that records log output."""
+    return _LogCapture(logger, getattr(__import__("logging"), level))
+
+
 class _FakeMemory(Memory):
     """Memory constructor helper for tests."""
 
@@ -94,6 +123,10 @@ class _InMemStore(MemoryStore):
 
     def get(self, mid: str) -> Optional[Memory]:
         return self._mem.get(mid)
+
+    def close(self) -> None:
+        # No resources to release; abstract contract just requires this exists.
+        return None
 
 
 # --- Tests ----------------------------------------------------------------
@@ -264,6 +297,73 @@ class TestLocateTier(unittest.TestCase):
         )
         self.assertEqual(f._locate_tier("s-1"), MemoryType.SEMANTIC)
         self.assertEqual(f._locate_tier("e-1"), MemoryType.EPISODIC)
+
+    def test_backend_exception_logged_at_error_not_silently_swallowed(self):
+        """A real backend failure (disk full, pool exhausted, auth) must be
+        surfaced as an ERROR log entry — not silently misclassified as
+        'memory does not exist'. Without this guard, an operator reading
+        CascadeReport.is_complete=True could conclude a GDPR deletion
+        succeeded when the backend never even answered.
+        """
+        from uams.pipeline.cascade import CascadeForgetter, logger as cascade_logger
+
+        class _BoomStore(_InMemStore):
+            def retrieve(self, memory_id):
+                raise RuntimeError("simulated backend failure (disk full)")
+
+        boom = _BoomStore(MemoryType.SEMANTIC)
+        # Healthy tier holds the memory so we can prove we don't
+        # accidentally short-circuit on the first store's boom.
+        good = _InMemStore(MemoryType.WORKING)
+        good.store(_make_mem("m1", "x", tier=MemoryType.WORKING))
+        stores = {MemoryType.SEMANTIC: boom, MemoryType.WORKING: good}
+        f = CascadeForgetter(stores, UAMSConfig(), CascadeAuditWriter())
+
+        cap = _capture_logs(cascade_logger, level="ERROR")
+        with cap:
+            tier = f._locate_tier("m1")
+            output = cap.text
+
+        # Behavior is unchanged: cascade still recovers by trying other tiers.
+        self.assertEqual(tier, MemoryType.WORKING)
+        # But the failure is now visible in logs.
+        self.assertIn("retrieve(m1) raised", output)
+        self.assertIn("simulated backend failure", output)
+
+    def test_all_backends_failing_returns_none_and_logs(self):
+        """If every tier's retrieve raises, _locate_tier still returns None
+        but each failure is logged separately — no silent failures."""
+        from uams.pipeline.cascade import CascadeForgetter, logger as cascade_logger
+
+        class _BoomStore(_InMemStore):
+            def retrieve(self, memory_id):
+                raise ConnectionError("backend down")
+
+        stores = {
+            MemoryType.SEMANTIC: _BoomStore(MemoryType.SEMANTIC),
+            MemoryType.EPISODIC: _BoomStore(MemoryType.EPISODIC),
+        }
+        f = CascadeForgetter(stores, UAMSConfig(), CascadeAuditWriter())
+
+        cap = _capture_logs(cascade_logger, level="ERROR")
+        with cap:
+            tier = f._locate_tier("anything")
+            output = cap.text
+
+        self.assertIsNone(tier)
+        # Two backends → two log lines (one per tier). exc_info=True
+        # embeds a traceback that mentions "backend down" again, so
+        # we count message occurrences (each emit is one backend).
+        # Split by handler-formatted record boundary (\n); each record
+        # is the captured output of one logger.error call.
+        # The handler emits one record per call, separated by '\n'
+        # in our capture buffer.
+        emit_count = sum(1 for _ in output.splitlines() if _.strip())
+        # Two emits, but traceback text can include the same string.
+        # The robust check: exactly 2 logger.error calls happened.
+        self.assertGreaterEqual(emit_count, 2)
+        # And the message substring appears at least twice (once per call).
+        self.assertGreaterEqual(output.count("backend down"), 2)
 
 
 class TestDiscoverInEdges(unittest.TestCase):

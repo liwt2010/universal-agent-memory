@@ -293,6 +293,7 @@ class UAMSConfig:
             histogram_max_entries=cls._env_int("UAMS_HISTOGRAM_MAX_ENTRIES", 10000),
             storage_backend=cls._env_str("UAMS_STORAGE_BACKEND", "memory"),
             sqlite_path=cls._env_str("UAMS_SQLITE_PATH", "uams.db"),
+            sqlite_pool_size=cls._env_int("UAMS_SQLITE_POOL_SIZE", 8),
             connection_timeout_seconds=cls._env_float("UAMS_CONNECT_TIMEOUT", 5.0),
             read_timeout_seconds=cls._env_float("UAMS_READ_TIMEOUT", 30.0),
             redis_use_tls=cls._env_bool("UAMS_REDIS_TLS", False),

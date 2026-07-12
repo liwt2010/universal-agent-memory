@@ -11,6 +11,12 @@ class MemoryStore(ABC):
     Abstract storage interface for a single memory tier.
 
     Implementations may use in-memory dicts, SQLite, ChromaDB, Neo4j, etc.
+
+    Lifecycle:
+        Custom subclasses MUST implement ``close()`` — it is called by
+        ``UniversalMemorySystem.shutdown()`` to release connections,
+        file handles, and pools. Skipping this leaks resources and can
+        leave SQLite WAL files unflushed.
     """
 
     @abstractmethod
@@ -53,4 +59,14 @@ class MemoryStore(ABC):
     @abstractmethod
     def delete_expired(self) -> int:
         """Delete all memories whose TemporalAnchor has expired. Returns count."""
+        ...
+
+    @abstractmethod
+    def close(self) -> None:
+        """Release all resources (connections, file handles, pools).
+
+        Called by ``UniversalMemorySystem.shutdown()``. Must be
+        idempotent — shutdown may call it more than once on the same
+        instance. Should NOT raise on already-closed resources.
+        """
         ...

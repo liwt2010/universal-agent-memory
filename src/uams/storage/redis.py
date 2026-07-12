@@ -70,6 +70,11 @@ class RedisStore(MemoryStore):
         self._pubsub = None
         self._lock = threading.RLock()
         self._available = False
+        # Auto-disable state: set to True the first time a Redis call
+        # raises a connection error. Mirrors MultiAgentCoordinator's
+        # pattern so transient outages don't degrade into per-call
+        # exception log spam and silent data loss.
+        self._disabled = False
 
         try:
             import redis
@@ -99,6 +104,12 @@ class RedisStore(MemoryStore):
 
     def close(self) -> None:
         """Close Redis connection pool."""
+        if self._pubsub:
+            try:
+                self._pubsub.close()
+            except Exception:
+                pass
+            self._pubsub = None
         if self._pool:
             try:
                 self._pool.disconnect()
@@ -106,6 +117,31 @@ class RedisStore(MemoryStore):
             except Exception:
                 pass
         self._available = False
+        self._disabled = True  # No point re-enabling after close.
+
+    @property
+    def is_disabled(self) -> bool:
+        """True if a Redis call has failed and the store dropped its
+        write/read role for this process. Once disabled, all public
+        methods short-circuit to safe no-ops (None/False/[]/0)."""
+        return self._disabled
+
+    def _mark_unavailable(self, exc: Exception) -> None:
+        """Mark this store as disabled after a Redis exception.
+
+        After the first connection-class error we refuse to keep
+        issuing requests — they would all fail with the same error
+        AND flood the log with tracebacks. Operators see one ERROR
+        line and the ``is_disabled`` flag flips to True.
+        """
+        if not self._disabled:
+            logger.error(
+                "RedisStore auto-disabling after %s: %s. "
+                "Future store/retrieve/delete calls return no-ops. "
+                "Other workers are unaffected (each has its own instance).",
+                type(exc).__name__, exc,
+            )
+            self._disabled = True
 
     def _memory_key(self, memory_id: str) -> str:
         return f"{self._key_prefix}{memory_id}"
@@ -260,7 +296,8 @@ class RedisStore(MemoryStore):
                 pipe.sadd(self._mem_tokens_key(mem_id), *tokens)
             pipe.execute()
             logger.debug("Stored memory %s in Redis (key=%s, tokens=%d)", memory.id, key, len(tokens))
-        except Exception:
+        except Exception as exc:
+            self._mark_unavailable(exc)
             logger.exception("Redis store failed for memory %s", memory.id)
 
     def retrieve(self, memory_id: str) -> Optional[Memory]:
@@ -278,7 +315,8 @@ class RedisStore(MemoryStore):
             pipe.hset(key, b"accessed_at", str(TemporalAnchor().created_at).encode("utf-8"))
             pipe.execute()
             return self._dict_to_memory(data)
-        except Exception:
+        except Exception as exc:
+            self._mark_unavailable(exc)
             logger.exception("Redis retrieve failed for %s", memory_id)
             return None
 
@@ -308,7 +346,8 @@ class RedisStore(MemoryStore):
             deleted = results[0] if results else 0
             logger.debug("Deleted memory %s from Redis (deleted=%d)", memory_id, deleted)
             return deleted > 0
-        except Exception:
+        except Exception as exc:
+            self._mark_unavailable(exc)
             logger.exception("Redis delete failed for %s", memory_id)
             return False
 
@@ -374,7 +413,8 @@ class RedisStore(MemoryStore):
                     if len(results) >= k:
                         break
             return results
-        except Exception:
+        except Exception as exc:
+            self._mark_unavailable(exc)
             logger.exception("Redis keyword search failed")
             return []
 
@@ -418,7 +458,8 @@ class RedisStore(MemoryStore):
                                     queue.append((rel.target_memory_id, d + 1))
             
             return results[:20]
-        except Exception:
+        except Exception as exc:
+            self._mark_unavailable(exc)
             logger.exception("Redis graph search failed")
             return []
 
@@ -448,7 +489,8 @@ class RedisStore(MemoryStore):
             # Sort by created_at descending
             results.sort(key=lambda m: m.anchor.created_at, reverse=True)
             return results[:limit]
-        except Exception:
+        except Exception as exc:
+            self._mark_unavailable(exc)
             logger.exception("Redis recent memories failed")
             return []
 
@@ -466,10 +508,11 @@ class RedisStore(MemoryStore):
             for mid in expired_ids:
                 mid_str = mid.decode("utf-8") if isinstance(mid, bytes) else mid
                 if self.delete(mid_str):
-                        count += 1
-                logger.debug("Redis deleted %d expired memories", count)
-                return count
-        except Exception:
+                    count += 1
+            logger.debug("Redis deleted %d expired memories", count)
+            return count
+        except Exception as exc:
+            self._mark_unavailable(exc)
             logger.exception("Redis delete_expired failed")
             return 0
 
@@ -484,7 +527,8 @@ class RedisStore(MemoryStore):
             self._client.publish(channel, message)
             logger.debug("Published signal to channel %s", channel)
             return True
-        except Exception:
+        except Exception as exc:
+            self._mark_unavailable(exc)
             logger.exception("Redis publish_signal failed")
             return False
 
@@ -497,6 +541,7 @@ class RedisStore(MemoryStore):
             pubsub.subscribe(channel)
             logger.info("Subscribed to Redis channel %s", channel)
             return pubsub
-        except Exception:
+        except Exception as exc:
+            self._mark_unavailable(exc)
             logger.exception("Redis subscribe_signals failed")
             return None

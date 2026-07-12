@@ -258,6 +258,18 @@ class InMemoryStore(MemoryStore):
                 self.delete(mid)
             return len(expired)
 
+    def close(self) -> None:
+        """In-memory store has no external resources to release.
+
+        Clears the in-memory state so a subsequent operation on this
+        instance starts empty. Idempotent — safe to call from
+        ``UniversalMemorySystem.shutdown()`` more than once.
+        """
+        with self._lock:
+            self._memories.clear()
+            self._keyword_index.clear()
+        logger.debug("InMemoryStore closed")
+
     @staticmethod
     def _tokenize(text: str) -> List[str]:
         """Simple word tokenization supporting CJK."""

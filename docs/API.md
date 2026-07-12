@@ -1,5 +1,17 @@
 # API Reference
 
+> **Source of truth:** this file documents only the public Python API
+> that exists in the code. If a method, parameter, or enum value is
+> not listed here, it does not exist — do not invent one. When in
+> doubt, introspect the running code:
+>
+> ```python
+> import inspect
+> from uams import UniversalMemorySystem
+> print(inspect.signature(UniversalMemorySystem.__init__))
+> print(inspect.signature(UniversalMemorySystem.remember))
+> ```
+
 ## Table of Contents
 
 - [UniversalMemorySystem](#universalmemorysystem)
@@ -12,6 +24,8 @@
 - [Privacy & Security](#privacy--security)
 - [Benchmarks](#benchmarks)
 - [Backup & Migration](#backup--migration)
+- [Multi-Agent Coordination](#multi-agent-coordination)
+- [Async API](#async-api)
 
 ---
 
@@ -25,31 +39,22 @@ from uams import UniversalMemorySystem
 
 ### Constructor
 
+The actual signature — do NOT add extra kwargs, the dataclass is frozen
+and rejects unknown fields with `TypeError`.
+
 ```python
 ums = UniversalMemorySystem(
-    backend: str = "memory",  # "memory", "sqlite", "postgresql", "redis", "neo4j", "chromadb"
-    max_raw_length: int = 10000,
-    retention_floor: float = 0.01,
-    log_level: str = "INFO",
-    token_budget: int = 2000,
-    embedding_fn: Optional[Callable] = None,
+    stores: Optional[Dict[MemoryType, MemoryStore]] = None,  # tier → store
+    compression: Optional[CompressionEngine] = None,
+    embedding_fn: EmbeddingFn = None,
+    privacy_filter: Optional[PrivacyFilter] = None,
+    dedup_window: Optional[DeduplicationWindow] = None,
+    config: Optional[UAMSConfig] = None,
 )
 ```
 
-Or use `UAMSConfig`:
-
-```python
-from uams import UniversalMemorySystem, UAMSConfig
-
-config = UAMSConfig(
-    storage_backend="postgresql",
-    max_raw_length=50000,
-    token_budget=4000,
-)
-config.validate()  # validates all constraints
-
-ums = UniversalMemorySystem(config=config)
-```
+If `stores` is omitted, `config.storage_backend` selects the backend.
+If `config` is also omitted, `UAMSConfig.from_env()` is used (env-driven).
 
 ### observe(event)
 
@@ -72,11 +77,12 @@ Explicitly save a fact to Semantic memory.
 ums.remember(
     fact="Alice is vegetarian",
     context=ctx,
-    memory_type=MemoryType.SEMANTIC,
     importance=8.0,
-    confidence=0.95,
-    tags={"dietary", "preference"},
+    category="dietary",
+    privacy=PrivacyLevel.PUBLIC,
+    tags={"dietary", "preference"},   # set, not list
 )
+# Returns MemoryId on success, None on failure (graceful degradation).
 ```
 
 ### recall(query, ...)
@@ -87,28 +93,37 @@ Retrieve relevant memories across all tiers.
 memories = ums.recall(
     query="hotel preferences",
     context=ctx,
-    budget_tokens=1000,
-    top_k=5,
+    budget_tokens=1000,            # Optional; falls back to config.default_token_budget.
+    include_working=True,
 )
+# Returns List[Memory]; empty list on any failure (never raises).
 ```
 
-### forget(memory_id)
+### forget(memory_id, cascade=...)
 
-Delete a specific memory by ID.
+Delete a memory by ID. Returns a `CascadeReport` (not a bool! — see
+docs/CASCADE_FORGET.md). The default cascade strategy is
+`CascadeStrategy.BIDIRECTIONAL` (GDPR-aligned, same-tier).
 
 ```python
-ums.forget(memory_id)
+from uams.pipeline.cascade import CascadeStrategy
+
+report = ums.forget("mem-1")                       # default BIDIRECTIONAL
+report = ums.forget("mem-1", cascade=CascadeStrategy.ISOLATED)
+report = ums.forget("mem-1", cascade=CascadeStrategy.FULL_CASCADE)  # cross-tier
+print(report.deleted_ids, report.is_complete)
 ```
 
-### consolidate(session_id)
+### consolidate(session_id=None)
 
 Trigger 4-tier compression. Auto-triggered on `EventType.SESSION_END`.
+If `session_id` is None, consolidates all pending sessions.
 
 ```python
 ums.consolidate(session_id="sess_1")
 ```
 
-### inject_context(...)
+### inject_context(query, context, budget_tokens=None)
 
 Format memories as a prompt text block.
 
@@ -118,15 +133,29 @@ context_block = ums.inject_context(
     context=ctx,
     budget_tokens=1000,
 )
-# Returns: "## Relevant Memory Context\n1. [SEMANTIC] ...\n2. [EPISODIC] ..."
+# Returns: a markdown-formatted string suitable for prompt injection.
 ```
 
-### sync(target)
+### decay_sweep()
 
-Bidirectional sync with external files.
+Run forgetting sweep. Returns count of evicted memories. **UAMS does
+NOT start a background sweeper thread; the caller is responsible for
+invoking this periodically** (e.g. from a cron, asyncio loop, or
+the docker entrypoint, which does so every 60s).
 
 ```python
-ums.sync("./MEMORY.md")
+evicted = ums.decay_sweep()
+```
+
+### shutdown()
+
+Graceful shutdown: persists WORKING-tier memories to EPISODIC and
+closes all backend connections. Wire `ums.register_signal_handlers()`
+in production so `docker stop` / SIGTERM triggers this.
+
+```python
+ums.register_signal_handlers()
+ums.shutdown()
 ```
 
 ---
@@ -135,13 +164,14 @@ ums.sync("./MEMORY.md")
 
 | Primitive | Signature | Purpose |
 |-----------|-----------|---------|
-| `observe(event)` | Record any `AgentEvent` into Working memory | Primary ingestion |
-| `remember(fact, ...)` | Save a fact to Semantic memory | Explicit storage |
-| `recall(query, ...)` | Retrieve relevant memories | Pre-turn context loading |
-| `forget(memory_id)` | Delete a memory by ID | User request / GDPR |
-| `consolidate(session_id)` | Trigger 4-tier compression | Auto on session end |
-| `inject_context(...)` | Format memories as prompt text | Direct LLM injection |
-| `sync(target)` | Sync with external files | External persistence |
+| `observe(event)` | `observe(event: AgentEvent)` | Record event into Working memory (primary ingestion) |
+| `remember(fact, ...)` | `remember(fact, context, importance=5.0, category="general", privacy=PUBLIC, tags=None)` | Save fact to Semantic memory |
+| `recall(query, ...)` | `recall(query, context, budget_tokens=None, include_working=True)` | Retrieve relevant memories |
+| `forget(memory_id, cascade=...)` | `forget(memory_id, cascade=CascadeStrategy.BIDIRECTIONAL)` | Delete a memory, returns CascadeReport |
+| `consolidate(session_id=None)` | `consolidate(session_id=None)` | Trigger 4-tier compression |
+| `inject_context(...)` | `inject_context(query, context, budget_tokens=None)` | Format memories as prompt text |
+| `decay_sweep()` | `decay_sweep()` | Run forgetting sweep; returns evict count |
+| `shutdown()` | `shutdown()` | Persist WORKING→EPISODIC + close backends |
 
 ---
 
@@ -190,16 +220,31 @@ event = AgentEvent(
 
 ### EventType Enum
 
-| Value | Description |
-|-------|-------------|
-| `USER_INPUT` | User message or action |
-| `AGENT_OUTPUT` | Agent response |
-| `ENV_OBSERVATION` | Environment state change |
-| `SYSTEM_EVENT` | System-level event |
-| `SESSION_START` | Session began |
-| `SESSION_END` | Session ended (triggers consolidation) |
-| `ERROR` | Error occurred |
-| `MANUAL` | Explicitly inserted memory |
+Authoritative list — generated from `uams.core.enums.EventType`. Values
+not in this table do NOT exist (this was previously out of sync with
+the code and listed `SYSTEM_EVENT`, `MANUAL`, `ERROR` which were never
+real enum members).
+
+| Value | Category | Description |
+|-------|----------|-------------|
+| `ENV_OBSERVATION` | Perception | Agent observed environment state |
+| `USER_INPUT` | Perception | User message or query |
+| `AGENT_OUTPUT` | Perception | Agent response or decision |
+| `ACTION_START` | Action | Tool/action execution begins |
+| `ACTION_END` | Action | Tool/action execution completes |
+| `ACTION_FAILURE` | Action | Tool/action failed |
+| `PLAN_FORMED` | Meta-cognition | Agent formed a plan or intention |
+| `PLAN_EXECUTED` | Meta-cognition | Plan step completed |
+| `PLAN_ABORTED` | Meta-cognition | Plan abandoned |
+| `REFLECTION` | Meta-cognition | Agent self-reflection |
+| `SESSION_START` | Session lifecycle | Session began |
+| `SESSION_END` | Session lifecycle | Session ended (triggers consolidation) |
+| `SUBSESSION_START` | Session lifecycle | Sub-task / sub-agent spawned |
+| `SUBSESSION_END` | Session lifecycle | Sub-task / sub-agent finished |
+| `SIGNAL_RECEIVED` | Multi-agent | Message from another agent |
+| `SIGNAL_SENT` | Multi-agent | Message sent to another agent |
+| `LEASE_ACQUIRED` | Multi-agent | Exclusive resource lock acquired |
+| `LEASE_RELEASED` | Multi-agent | Exclusive resource lock released |
 
 ---
 
@@ -248,12 +293,16 @@ memory = Memory(
 
 ### PrivacyLevel Enum
 
+Authoritative list — generated from `uams.core.enums.PrivacyLevel`.
+A previous version of this table listed `CONFIDENTIAL`, which is not
+a real enum member.
+
 | Value | Description |
 |-------|-------------|
-| `PUBLIC` | No restriction |
-| `INTERNAL` | Within team only |
-| `CONFIDENTIAL` | Agent only |
-| `SECRET` | Requires explicit access |
+| `PUBLIC` | Safe to share across agents |
+| `INTERNAL` | Within same agent instance |
+| `PRIVATE` | User-specific, sensitive |
+| `SECRET` | Credentials, PII (never leave local storage) |
 
 ---
 
@@ -355,64 +404,44 @@ Features: Dense vector search, metadata filtering, automatic persistence.
 
 ### UAMSConfig
 
+The dataclass has 30+ fields spanning storage backend selection, LLM
+config, embedding providers, retention tuning, security strictness,
+and audit paths. Field names use `*_seconds` suffixes (not bare units)
+and tier-named fields use the pattern `<tier>_<metric>`.
+
+**Do NOT hand-write field-by-field UAMSConfig instances from this
+document** — the previous version did so and listed field names like
+`working_ttl` (real name: `working_ttl_seconds`) and `retention_floor`
+(not a field) that would have raised `TypeError` on a frozen
+dataclass.
+
+The supported way to configure UAMSConfig:
+
 ```python
-from uams import UAMSConfig
+# Option 1: environment-driven (recommended for production).
+# All UAMS_* env vars are documented in src/uams/config.py.
+import os
+os.environ["UAMS_STORAGE_BACKEND"] = "postgresql"
+os.environ["UAMS_POSTGRESQL_HOST"] = "db.prod.internal"
+os.environ["UAMS_DEFAULT_TOKEN_BUDGET"] = "4000"
+os.environ["UAMS_STRICTNESS"] = "production"  # dev/staging/production
 
-config = UAMSConfig(
-    # Core
-    storage_backend="postgresql",
-    max_raw_length=10000,
-    memory_capacity=10000,
-    retention_floor=0.01,
-    
-    # Temporal
-    working_ttl=1800.0,
-    episodic_half_life=604800.0,
-    semantic_half_life=7776000.0,
-    procedural_half_life=31536000.0,
-    
-    # Storage
-    sqlite_path="./uams.db",
-    
-    # PostgreSQL
-    postgresql_host="localhost",
-    postgresql_port=5432,
-    postgresql_database="uams",
-    postgresql_user="uams",
-    postgresql_password="",
-    postgresql_pool_min=2,
-    postgresql_pool_max=20,
-    
-    # Redis
-    redis_host="localhost",
-    redis_port=6379,
-    redis_db=0,
-    redis_password=None,
-    redis_key_prefix="uams:memory:",
-    redis_ttl_seconds=None,
-    redis_enable_pubsub=False,
-    redis_pool_max_connections=50,
-    
-    # Neo4j
-    neo4j_uri="bolt://localhost:7687",
-    neo4j_user="neo4j",
-    neo4j_password="",
-    neo4j_database="neo4j",
-    
-    # Logging
-    log_level="INFO",
-    
-    # System
-    token_budget=2000,
-    event_bus_max_buffer=10000,
-    histogram_max_entries=10000,
-    
-    # Multi-agent
-    multi_agent_enabled=False,
-)
+from uams import UniversalMemorySystem, UAMSConfig
+config = UAMSConfig.from_env()
+config.validate()
+ums = UniversalMemorySystem(config=config)
 
-config.validate()  # Raises ValueError if any constraint is violated
+# Option 2: programmatic override of specific fields.
+config = UAMSConfig.from_env()
+config.working_ttl_seconds = 3600.0        # 1 hour
+config.sqlite_pool_size = 8                # 8 conns in pool
+config.log_level = "WARNING"
+ums = UniversalMemorySystem(config=config)
 ```
+
+For the complete field list and constraints, read `src/uams/config.py`
+directly — it is the source of truth, and `inspect.signature(
+UAMSConfig)` returns the full field list at runtime.
 
 ---
 

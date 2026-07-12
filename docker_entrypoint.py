@@ -16,6 +16,13 @@ def main() -> None:
     ums = UniversalMemorySystem()
     server = HealthServer(port=3111)
     server.start(ums_instance=ums)
+    # Register SIGTERM/SIGINT handlers so `docker stop` (SIGTERM) and Ctrl-C
+    # both trigger UniversalMemorySystem.shutdown(), which persists working
+    # memories to episodic and closes backend connections. Without this,
+    # Docker's default 10s SIGTERM grace period causes Python to exit hard:
+    # WORKING-tier memories in the last <TTL> window are lost and SQLite WAL
+    # may not be flushed cleanly.
+    ums.register_signal_handlers()
     print("UAMS running with health check on :3111")
     while True:
         time.sleep(60)
