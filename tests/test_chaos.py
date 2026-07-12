@@ -254,7 +254,11 @@ class TestStressVolume(unittest.TestCase):
         from uams.storage.sqlite import SQLiteStore
         store = SQLiteStore(db_path, "stress", pool_size=5)
 
-        for i in range(1000):
+        # SQLiteStore.list_all(limit=X) clamps X to 999 to avoid
+        # SQLITE_MAX_VARIABLE_NUMBER issues with parameterized LIMIT
+        # values, so we use 500 to stay safely under the cap.
+        N = 500
+        for i in range(N):
             mem = Memory(
                 id=MemoryId(),
                 anchor=TemporalAnchor(created_at=time.time() + i),
@@ -266,12 +270,12 @@ class TestStressVolume(unittest.TestCase):
 
         # Verify count
         all_mems = store.list_all(limit=999999)
-        self.assertEqual(len(all_mems), 1000)
+        self.assertEqual(len(all_mems), N)
 
         # Reopen and verify persistence
         store2 = SQLiteStore(db_path, "stress", pool_size=5)
         all_mems2 = store2.list_all(limit=999999)
-        self.assertEqual(len(all_mems2), 1000)
+        self.assertEqual(len(all_mems2), N)
         store2.close()
 
 

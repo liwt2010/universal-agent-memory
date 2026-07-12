@@ -22,6 +22,13 @@ logger = get_logger(__name__)
 
 _SCHEMA_VERSION = 1  # Current schema version for migrations
 
+# SQLite default SQLITE_MAX_VARIABLE_NUMBER (the cap on bound parameters
+# in a single prepared statement). Values passed to LIMIT clauses via
+# parameter binding must not exceed this — see list_all() for the
+# clamping logic. This constant is also a runtime sanity check for the
+# test suite.
+_SQLITE_MAX_VARIABLE_NUMBER = 999
+
 
 class SQLiteStore(MemoryStore):
     """
@@ -67,6 +74,18 @@ class SQLiteStore(MemoryStore):
         return conn
 
     def _get_connection(self) -> sqlite3.Connection:
+        # Refuse to hand out connections after close() so background writes
+        # don't block forever on Queue.get() of an empty pool. close()
+        # already drains the queue and sets _available=False; this guard
+        # makes the failure mode a clear RuntimeError instead of either
+        # a hang (when the queue happens to still have an item) or a
+        # confusing OperationalError (when Queue.get() returns a closed
+        # connection from _all_conns).
+        if not self._available:
+            raise RuntimeError(
+                f"SQLiteStore(tier={self._tier_name}) is closed; "
+                "no further operations are permitted"
+            )
         return self._pool.get()
 
     def _return_connection(self, conn: sqlite3.Connection) -> None:
@@ -443,14 +462,35 @@ class SQLiteStore(MemoryStore):
         # This is expensive in SQLite. Return keyword match for now.
         return self.search_keywords(entity, k=10)
 
-    def list_all(self, limit: int = 100) -> List[Memory]:
+    def list_all(self, limit: Optional[int] = 100) -> List[Memory]:
+        """List memories ordered by created_at DESC.
+
+        ``limit=None`` returns all memories in the tier (capped at a
+        sane process-wide ceiling so a runaway table doesn't OOM). The
+        ``limit`` value is clamped to SQLITE_MAX_VARIABLE_NUMBER (999)
+        because ``list_all`` historically passed the value as a SQL
+        parameter and ``sqlite3.OperationalError: too many SQL variables``
+        on values >999 was silently swallowed by the outer ``except``,
+        returning ``[]`` from callers like ``get_stats()``. Now we clamp
+        to 999 so callers asking for "all" still get results.
+
+        ``limit <= 0`` is treated as "use the default" (100) since 0 is
+        rarely meaningful and almost always a caller bug.
+        """
+        if limit is None:
+            effective_limit = _SQLITE_MAX_VARIABLE_NUMBER  # 999 — safe parameter
+        elif limit <= 0:
+            effective_limit = 100
+        else:
+            # Clamp to SQLite's parameter limit to avoid OperationalError.
+            effective_limit = min(limit, _SQLITE_MAX_VARIABLE_NUMBER)
         conn = self._get_connection()
         try:
             cursor = conn.execute(f"""
                 SELECT * FROM {self._tier_name}_memories
                 ORDER BY created_at DESC
                 LIMIT ?
-            """, (limit,))
+            """, (effective_limit,))
             rows = cursor.fetchall()
             return [self._row_to_memory(row) for row in rows]
         except Exception:
@@ -475,6 +515,69 @@ class SQLiteStore(MemoryStore):
                 return count
             except Exception:
                 logger.exception("delete_expired failed")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return 0
+            finally:
+                self._return_connection(conn)
+
+    def count(self) -> int:
+        """O(1) round-trip COUNT(*) — replaces ``len(list_all(999999))``.
+
+        Avoids the SQLITE_MAX_VARIABLE_NUMBER trap that bit the
+        previous list_all()-based get_stats() implementation.
+        """
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM {self._tier_name}_memories"
+            ).fetchone()
+            return int(row[0]) if row else 0
+        except Exception:
+            logger.exception("SQLite count() failed for tier %s", self._tier_name)
+            return 0
+        finally:
+            self._return_connection(conn)
+
+    def delete_by_filter(self, field: str, value: Any) -> int:
+        """O(matches) delete via indexed WHERE on a flat context column.
+
+        UAMS stores ``Memory.context`` as flat columns (``agent_id``,
+        ``user_id``, ``project_id``, ...) rather than a single JSON
+        blob, so the query is a direct column match. Only top-level
+        context fields are supported (no dotted paths) — passing a
+        nested path returns 0 with a warning.
+        """
+        # Whitelist: only top-level context fields are real columns.
+        allowed = {"agent_id", "agent_type", "session_id",
+                   "user_id", "team_id", "project_id"}
+        if field not in allowed:
+            logger.warning(
+                "SQLiteStore.delete_by_filter: field %r not in context "
+                "whitelist %s; returning 0",
+                field, sorted(allowed),
+            )
+            return 0
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                cur = conn.execute(
+                    f"DELETE FROM {self._tier_name}_memories WHERE {field} = ?",
+                    (value,),
+                )
+                conn.commit()
+                deleted = cur.rowcount
+                logger.info(
+                    "SQLite deleted %d memories from %s where %s = %r",
+                    deleted, self._tier_name, field, value,
+                )
+                return deleted
+            except Exception:
+                logger.exception(
+                    "SQLite delete_by_filter(%s=%r) failed", field, value,
+                )
                 try:
                     conn.rollback()
                 except Exception:

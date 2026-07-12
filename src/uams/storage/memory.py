@@ -20,6 +20,21 @@ from uams.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
+def _context_field(mem: Memory, field: str) -> Any:
+    """Read a dotted field path from ``Memory.context``.
+
+    Supports both top-level (``agent_id``) and nested (``x.y``) paths
+    via ``getattr`` chaining. Returns None for any missing segment.
+    Used by ``delete_by_filter`` and tests.
+    """
+    obj: Any = mem.context
+    for part in field.split("."):
+        obj = getattr(obj, part, None)
+        if obj is None:
+            return None
+    return obj
+
+
 class InMemoryStore(MemoryStore):
     """
     Thread-safe reference implementation using plain Python dicts and sets.
@@ -257,6 +272,31 @@ class InMemoryStore(MemoryStore):
             for mid in expired:
                 self.delete(mid)
             return len(expired)
+
+    def count(self) -> int:
+        with self._lock:
+            return len(self._memories)
+
+    def delete_by_filter(self, field: str, value: Any) -> int:
+        """O(matches) delete by context.<field> == value.
+
+        Linear scan of the dict is unavoidable for an in-memory store,
+        but we still avoid the previous ``list_all()`` round-trip —
+        we work off ``_memories.items()`` directly under the lock.
+        """
+        with self._lock:
+            matches = [
+                mid for mid, mem in self._memories.items()
+                if _context_field(mem, field) == value
+            ]
+            for mid in matches:
+                # Bypass the public delete() to avoid re-acquiring the
+                # lock; just clean up our local state.
+                del self._memories[mid]
+                # Mirror delete()'s keyword-index cleanup.
+                for token_set in self._keyword_index.values():
+                    token_set.discard(mid)
+            return len(matches)
 
     def close(self) -> None:
         """In-memory store has no external resources to release.

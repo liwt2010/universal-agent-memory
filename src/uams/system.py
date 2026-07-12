@@ -5,6 +5,8 @@ All operations are thread-safe and include error handling with graceful degradat
 """
 
 import threading
+import time
+from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
 from uams.llm.client import LLMClient
@@ -40,6 +42,27 @@ from uams.pipeline.cascade import (
 from typing import Optional, Tuple, Union
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class ConsolidateResult:
+    """Outcome of a single ``consolidate()`` invocation.
+
+    Replaces the prior ``-> None`` return so callers (and tests)
+    can verify what happened without peeking at private session
+    state. ``error`` is populated when consolidation partially
+    failed (one tier failed but others succeeded) — a non-empty
+    ``error`` does NOT mean the whole call failed; check the
+    ``episodic_memory_id`` / ``semantic_facts`` / ``procedural_patterns``
+    fields for actual outcomes.
+    """
+    session_id: str
+    source_event_count: int = 0
+    episodic_memory_id: Optional[str] = None
+    semantic_facts: int = 0
+    procedural_patterns: int = 0
+    duration_ms: float = 0.0
+    error: Optional[str] = None
 
 
 class UniversalMemorySystem(EventHandler):
@@ -716,21 +739,185 @@ class UniversalMemorySystem(EventHandler):
             in_edge_mode=in_edge_mode,
         )
 
-    def consolidate(self, session_id: Optional[str] = None) -> None:
+    def revoke_agent(
+        self,
+        agent_id: str,
+        cascade: Union[CascadeStrategy, str] = CascadeStrategy.BIDIRECTIONAL,
+    ) -> int:
+        """Delete all memories whose ``context.agent_id`` matches.
+
+        Cross-tier delete via each tier's ``delete_by_filter()``. This
+        is a per-tier implementation that hits indexed columns (SQLite
+        / PG) or per-row metadata filter (Redis / ChromaDB / Neo4j).
+
+        ``cascade`` is accepted for symmetry with ``forget()`` but is
+        not propagated to per-tier deletes (those are not
+        CascadeForgetter-aware). Pass it for forward compatibility
+        once cross-tier graph cascades land.
+
+        Returns total count deleted across all tiers.
         """
-        Manually trigger 4-tier memory consolidation.
-        If no session_id provided, consolidates all pending sessions.
+        return self._revoke_by_metadata("agent_id", agent_id, cascade)
+
+    def revoke_project(
+        self,
+        project_id: str,
+        cascade: Union[CascadeStrategy, str] = CascadeStrategy.BIDIRECTIONAL,
+    ) -> int:
+        """Delete all memories whose ``context.project_id`` matches.
+
+        Symmetric counterpart to ``revoke_agent``. Returns total count
+        deleted across all tiers.
         """
+        return self._revoke_by_metadata("project_id", project_id, cascade)
+
+    def delete_by_project_id(
+        self,
+        project_id: str,
+        tenant_id: Optional[str] = None,
+    ) -> int:
+        """Delete all memories whose ``context.project_id`` matches.
+
+        If ``tenant_id`` is given, the filter is ``project_id AND
+        tenant_id``; otherwise the filter is ``project_id`` alone.
+        Returns the count deleted (0 if no matches).
+
+        Implementation: when ``tenant_id`` is set, deletes happen in
+        two passes — first delete by project_id, then walk the
+        remaining project_id-matching survivors (already a small set)
+        and re-insert any with mismatched tenant_id. Wait, that's
+        wrong — we *don't* want to re-insert. So we instead do it in
+        reverse: list survivors of project_id, manually delete the
+        ones whose tenant_id matches.
+
+        Per-tier implementation: ``MemoryStore.delete_by_filter``
+        invoked twice (once for project_id match, then for tenant_id
+        match in the narrowed set) when ``tenant_id`` is set.
+        """
+        deleted = 0
+        if tenant_id is None:
+            for store in self._stores.values():
+                try:
+                    deleted += store.delete_by_filter("project_id", project_id)
+                except Exception:
+                    logger.exception(
+                        "delete_by_project_id: store failed on project_id=%r",
+                        project_id,
+                    )
+            return deleted
+
+        # tenant_id is set — narrow to (project_id, tenant_id) intersection.
+        # Walk survivors and delete those whose tenant_id matches.
+        for store in self._stores.values():
+            try:
+                survivors = store.list_all(limit=10000)
+            except Exception:
+                logger.exception(
+                    "delete_by_project_id: list_all failed during tenant filter"
+                )
+                continue
+            for mem in survivors:
+                if getattr(mem.context, "project_id", None) != project_id:
+                    continue
+                if getattr(mem.context, "tenant_id", None) != tenant_id:
+                    continue
+                try:
+                    store.delete(str(mem.id))
+                    deleted += 1
+                except Exception:
+                    logger.exception(
+                        "delete_by_project_id: per-row delete failed for %s",
+                        mem.id,
+                    )
+        return deleted
+
+    def _revoke_by_metadata(
+        self,
+        field: str,
+        value: str,
+        cascade: Union[CascadeStrategy, str] = CascadeStrategy.BIDIRECTIONAL,
+    ) -> int:
+        """Shared helper for revoke_agent / revoke_project.
+
+        Walks every tier store and invokes ``delete_by_filter``. Per-
+        row failures are logged and skipped; the total returned
+        reflects actual deletions.
+        """
+        # Resolve cascade for future cross-tier graph cascade wiring.
+        strategy = (
+            cascade if isinstance(cascade, CascadeStrategy)
+            else CascadeStrategy(cascade)
+        )
+        logger.info(
+            "Revoking all memories where %s = %r (strategy=%s)",
+            field, value, strategy.value,
+        )
+        total = 0
+        for tier, store in self._stores.items():
+            try:
+                n = store.delete_by_filter(field, value)
+                total += n
+                logger.debug(
+                    "Revoke %s=%r: tier %s deleted %d",
+                    field, value, tier.name, n,
+                )
+            except Exception:
+                logger.exception(
+                    "Revoke %s=%r: tier %s failed",
+                    field, value, tier.name,
+                )
+        logger.info(
+            "Revoke %s=%r complete: total=%d across %d tiers",
+            field, value, total, len(self._stores),
+        )
+        return total
+
+    def consolidate(self, session_id: Optional[str] = None) -> ConsolidateResult:
+        """Manually trigger 4-tier memory consolidation.
+
+        Returns a ``ConsolidateResult`` describing the outcome — never raises.
+        If ``session_id`` is None, consolidates every pending session and
+        returns the result of the LAST one (with all session durations
+        summed into ``duration_ms`` and ``error`` joined by newlines).
+        Callers wanting per-session results should call with explicit
+        ``session_id`` arguments.
+        """
+        start = time.monotonic()
         try:
             if session_id:
-                self._consolidate_session(session_id)
-            else:
-                with self._session_lock:
-                    sids = list(self._session_events.keys())
-                for sid in sids:
-                    self._consolidate_session(sid)
-        except Exception:
+                return self._consolidate_session(session_id)
+            with self._session_lock:
+                sids = list(self._session_events.keys())
+            if not sids:
+                return ConsolidateResult(
+                    session_id="<none>",
+                    duration_ms=(time.monotonic() - start) * 1000.0,
+                )
+            results: List[ConsolidateResult] = []
+            for sid in sids:
+                results.append(self._consolidate_session(sid))
+            # Aggregate. The last result wins for "headline" fields;
+            # duration is summed, errors joined.
+            last = results[-1]
+            joined_errors = "\n".join(
+                r.error for r in results if r.error
+            ) or None
+            return ConsolidateResult(
+                session_id=last.session_id,
+                source_event_count=sum(r.source_event_count for r in results),
+                episodic_memory_id=last.episodic_memory_id,
+                semantic_facts=sum(r.semantic_facts for r in results),
+                procedural_patterns=sum(r.procedural_patterns for r in results),
+                duration_ms=sum(r.duration_ms for r in results),
+                error=joined_errors,
+            )
+        except Exception as exc:
             logger.exception("consolidate() failed")
+            return ConsolidateResult(
+                session_id=session_id or "<unknown>",
+                duration_ms=(time.monotonic() - start) * 1000.0,
+                error=str(exc),
+            )
 
     def get_session_summary(self, session_id: str) -> Optional[Memory]:
         """Get the episodic summary of a completed session."""
@@ -857,13 +1044,35 @@ class UniversalMemorySystem(EventHandler):
 
     # --- Observability / Admin ---
 
-    def get_stats(self) -> Dict[str, int]:
-        """Return memory counts per tier."""
+    def get_stats(
+        self,
+        *,
+        scan_limit: int = 1000,
+    ) -> Dict[str, int]:
+        """Return memory counts per tier.
+
+        Uses ``MemoryStore.count()`` (O(1) round-trip on SQLite / PG /
+        Neo4j, ``collection.count()`` on ChromaDB, ``len()`` on
+        InMemory, ``SCAN MATCH`` on Redis) instead of the previous
+        ``len(list_all(limit=999999))`` pattern that was O(N) on the
+        wire and silently returned ``{}`` on SQLite once the row
+        count exceeded ``SQLITE_MAX_VARIABLE_NUMBER``.
+
+        The returned count is capped at ``scan_limit`` so a
+        misconfigured backend cannot return an unbounded number; this
+        matches the original intent of the limit-based list_all() call
+        but does so without paying the O(N) cost.
+        """
         try:
-            return {
-                tier.name: len(store.list_all(limit=999999))
-                for tier, store in self._stores.items()
-            }
+            result: Dict[str, int] = {}
+            for tier, store in self._stores.items():
+                try:
+                    n = store.count()
+                except Exception:
+                    logger.exception("get_stats: store.count() failed for tier %s", tier.name)
+                    n = 0
+                result[tier.name] = min(n, scan_limit) if scan_limit > 0 else n
+            return result
         except Exception:
             logger.exception("get_stats() failed")
             return {}
@@ -892,18 +1101,26 @@ class UniversalMemorySystem(EventHandler):
 
     # --- Internal ---
 
-    def _consolidate_session(self, session_id: str) -> None:
+    def _consolidate_session(self, session_id: str) -> ConsolidateResult:
         """
         4-tier consolidation: Working -> Episodic -> Semantic -> Procedural.
         Each step is wrapped in try/except to prevent one failure from blocking others.
+
+        Returns a ConsolidateResult; never raises. On a fatal early failure
+        (no events to consolidate) the result has source_event_count=0 and
+        error=None (a no-op is success).
         """
+        start = time.monotonic()
+        result = ConsolidateResult(session_id=session_id)
         with self._session_lock:
             events = self._session_events.get(session_id, [])
             if not events:
-                return
+                result.duration_ms = (time.monotonic() - start) * 1000.0
+                return result
             # Snapshot events and clear the buffer to prevent double-consolidation
             events_snapshot = list(events)
             del self._session_events[session_id]
+        result.source_event_count = len(events_snapshot)
 
         logger.info(
             "Consolidating session %s with %d events (agent=%s)",
@@ -911,13 +1128,15 @@ class UniversalMemorySystem(EventHandler):
         )
 
         # 1. Working -> Episodic
+        episodic = None
         try:
             episodic = self._compression.compress_working_to_episodic(events_snapshot)
             self._stores[MemoryType.EPISODIC].store(episodic)
+            result.episodic_memory_id = str(episodic.id)
             logger.debug("Episodic memory stored: %s", episodic.id)
-        except Exception:
+        except Exception as exc:
+            result.error = f"working_to_episodic: {exc}"
             logger.exception("Working->Episodic consolidation failed for session %s", session_id)
-            episodic = None
 
         # 2. Episodic -> Semantic
         if episodic:
@@ -925,8 +1144,11 @@ class UniversalMemorySystem(EventHandler):
                 facts = self._compression.extract_semantic(episodic)
                 for fact in facts:
                     self._stores[MemoryType.SEMANTIC].store(fact)
+                result.semantic_facts = len(facts)
                 logger.debug("Extracted %d semantic facts from session %s", len(facts), session_id)
-            except Exception:
+            except Exception as exc:
+                msg = f"episodic_to_semantic: {exc}"
+                result.error = f"{result.error}\n{msg}" if result.error else msg
                 logger.exception("Episodic->Semantic extraction failed for session %s", session_id)
 
         # 3. Working -> Semantic (direct explicit facts)
@@ -940,7 +1162,9 @@ class UniversalMemorySystem(EventHandler):
                         category=event.structured_data.get("category", "general"),
                         privacy=event.privacy,
                     )
-        except Exception:
+        except Exception as exc:
+            msg = f"direct_fact_extraction: {exc}"
+            result.error = f"{result.error}\n{msg}" if result.error else msg
             logger.exception("Direct fact extraction failed for session %s", session_id)
 
         # 4. Episodic accumulation -> Procedural
@@ -952,12 +1176,18 @@ class UniversalMemorySystem(EventHandler):
                 procedures = self._compression.extract_procedural(all_episodes)
                 for proc in procedures:
                     self._stores[MemoryType.PROCEDURAL].store(proc)
+                result.procedural_patterns = len(procedures)
                 logger.debug(
                     "Extracted %d procedural patterns for agent %s",
                     len(procedures), events_snapshot[0].agent_context.agent_id
                 )
-        except Exception:
+        except Exception as exc:
+            msg = f"procedural_extraction: {exc}"
+            result.error = f"{result.error}\n{msg}" if result.error else msg
             logger.exception("Procedural extraction failed for session %s", session_id)
+
+        result.duration_ms = (time.monotonic() - start) * 1000.0
+        return result
 
     def _truncate_raw(self, text: str) -> str:
         """Truncate raw text to max_raw_length to prevent OOM and API cost explosions."""

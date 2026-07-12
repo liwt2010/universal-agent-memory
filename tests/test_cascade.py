@@ -8,7 +8,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 # Ensure `src/` is on sys.path so `import uams.*` works without an editable install.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -127,6 +127,19 @@ class _InMemStore(MemoryStore):
     def close(self) -> None:
         # No resources to release; abstract contract just requires this exists.
         return None
+
+    def count(self) -> int:
+        return len(self._mem)
+
+    def delete_by_filter(self, field: str, value: Any) -> int:
+        from uams.storage.memory import _context_field
+        matches = [
+            mid for mid, mem in self._mem.items()
+            if _context_field(mem, field) == value
+        ]
+        for mid in matches:
+            del self._mem[mid]
+        return len(matches)
 
 
 # --- Tests ----------------------------------------------------------------

@@ -301,19 +301,51 @@ class RedisStore(MemoryStore):
             logger.exception("Redis store failed for memory %s", memory.id)
 
     def retrieve(self, memory_id: str) -> Optional[Memory]:
+        """Read a memory and update accessed_at atomically.
+
+        Uses a Lua script (EVAL) so the HGETALL and the touched-time
+        HSET happen server-side in one round-trip, AND so the HSET
+        cannot fire if the key was deleted between the two reads.
+
+        Why this matters: the previous implementation did HGETALL then
+        HSET as separate round-trips. A concurrent ``delete()`` between
+        HGETALL and HSET would be silently undone — the HSET *resurrects*
+        a deleted key (Redis HSET is upsert), so a memory removed under
+        GDPR Article 17 came back to life on the next retrieve. The Lua
+        script checks for HGETALL emptiness first and only HSETs when
+        data was actually returned.
+
+        Falls back to the old two-step path with a WARNING if EVAL is
+        unavailable (very old Redis, restricted ACL, fake redis in tests).
+        The fallback is racy; operators should investigate why EVAL is
+        blocked — it should never happen on a real Redis.
+        """
         if not self._available or not self._client:
             return None
         try:
             key = self._memory_key(memory_id)
-            # HGETALL + touched-time HSET collapsed into 1 round-trip via pipeline.
-            # HGETALL first so we can short-circuit on missing keys without
-            # paying the HSET round-trip.
-            data = self._client.hgetall(key)
+            accessed_at_bytes = str(TemporalAnchor().created_at).encode("utf-8")
+            lua = (
+                "local data = redis.call('HGETALL', KEYS[1]) "
+                "if #data == 0 then return {} end "
+                "redis.call('HSET', KEYS[1], 'accessed_at', ARGV[1]) "
+                "return data"
+            )
+            try:
+                data = self._client.eval(lua, 1, key, accessed_at_bytes)
+            except Exception as eval_exc:
+                logger.warning(
+                    "Redis EVAL unavailable for retrieve (%s: %s); "
+                    "falling back to non-atomic path which can resurrect "
+                    "deleted memories under GDPR Article 17.",
+                    type(eval_exc).__name__, eval_exc,
+                )
+                data = self._client.hgetall(key)
+                if not data:
+                    return None
+                self._client.hset(key, b"accessed_at", accessed_at_bytes)
             if not data:
                 return None
-            pipe = self._client.pipeline(transaction=False)
-            pipe.hset(key, b"accessed_at", str(TemporalAnchor().created_at).encode("utf-8"))
-            pipe.execute()
             return self._dict_to_memory(data)
         except Exception as exc:
             self._mark_unavailable(exc)
@@ -514,6 +546,99 @@ class RedisStore(MemoryStore):
         except Exception as exc:
             self._mark_unavailable(exc)
             logger.exception("Redis delete_expired failed")
+            return 0
+
+    def count(self) -> int:
+        """O(N) DBSIZE approximation — uses ``SCAN MATCH <prefix>*`` for
+        memory hash keys rather than ``DBSIZE`` (which counts ALL
+        keys, not just ours). Capped at scan_limit iterations to avoid
+        runaway cost on a shared Redis instance.
+
+        For a precise count the caller can use ``len(self.list_all(...))``
+        but that's O(N) on the wire — this method is intentionally
+        cheap and approximate.
+        """
+        if not self._available or not self._client:
+            return 0
+        try:
+            count = 0
+            pattern = f"{self._key_prefix}*"
+            # SCAN returns (cursor, keys). The "memory" hashes have the
+            # bare prefix; the inverted-index keys have "idx:" suffix.
+            # Filter to exclude idx:* since they don't represent
+            # memories.
+            cursor = 0
+            while True:
+                cursor, keys = self._client.scan(
+                    cursor=cursor, match=pattern, count=500,
+                )
+                for k in keys:
+                    kstr = k.decode("utf-8") if isinstance(k, bytes) else k
+                    if ":idx:" not in kstr:
+                        count += 1
+                if cursor == 0:
+                    break
+            return count
+        except Exception as exc:
+            self._mark_unavailable(exc)
+            logger.exception("Redis count() failed")
+            return 0
+
+    def delete_by_filter(self, field: str, value: Any) -> int:
+        """O(N) delete — Redis has no native secondary index, so we
+        SCAN every memory hash, decode the stored context, and DELETE
+        those that match. Best-effort: partial failures are not
+        retried.
+
+        Accepts the same ``field`` whitelist as
+        ``SQLiteStore.delete_by_filter`` (agent_id, user_id, etc.).
+        Other fields return 0.
+        """
+        allowed = {"agent_id", "agent_type", "session_id",
+                   "user_id", "team_id", "project_id"}
+        if field not in allowed:
+            logger.warning(
+                "RedisStore.delete_by_filter: field %r not in whitelist %s",
+                field, sorted(allowed),
+            )
+            return 0
+        if not self._available or not self._client:
+            return 0
+        try:
+            deleted = 0
+            cursor = 0
+            pattern = f"{self._key_prefix}*"
+            to_delete: List[str] = []
+            while True:
+                cursor, keys = self._client.scan(
+                    cursor=cursor, match=pattern, count=200,
+                )
+                for k in keys:
+                    kstr = k.decode("utf-8") if isinstance(k, bytes) else k
+                    if ":idx:" in kstr:
+                        continue
+                    data = self._client.hgetall(k)
+                    stored = data.get(field.encode("utf-8"))
+                    if stored is None:
+                        continue
+                    stored_str = stored.decode("utf-8") if isinstance(stored, bytes) else stored
+                    if stored_str == str(value):
+                        # Extract memory id from "<prefix><id>".
+                        mem_id = kstr[len(self._key_prefix):]
+                        to_delete.append(mem_id)
+                if cursor == 0:
+                    break
+            for mem_id in to_delete:
+                if self.delete(mem_id):
+                    deleted += 1
+            logger.info(
+                "Redis deleted %d memories from %s where %s = %r",
+                deleted, self._key_prefix.rstrip(":"), field, value,
+            )
+            return deleted
+        except Exception as exc:
+            self._mark_unavailable(exc)
+            logger.exception("Redis delete_by_filter failed")
             return 0
 
     # --- Pub/Sub Signal Support ---

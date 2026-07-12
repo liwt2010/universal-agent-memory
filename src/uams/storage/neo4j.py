@@ -165,12 +165,52 @@ class Neo4jStore(MemoryStore):
                     confidence=props.get("confidence", 1.0),
                     tags=tags,
                     categories=categories,
+                    # Read relations from the optional ``rels`` query field.
+                    # The caller (retrieve / search_graph) must OPTIONAL
+                    # MATCH outgoing RELATES edges and ``collect(...)`` them
+                    # as ``rels`` for this to be populated. Without that
+                    # join, relations defaults to [] and the Memory is
+                    # partially populated — but cascade in-edge discovery
+                    # on Neo4j would silently degrade to OUTGOING. Callers
+                    # that need a fully-populated Memory for cascade should
+                    # use ``_record_to_memory_with_rels`` or extend their
+                    # query to OPTIONAL MATCH the edges.
+                    relations=self._extract_relations(record),
                     provenance=provenance,
                 ),
             )
         except Exception as e:
             logger.exception("Failed to deserialize Neo4j record: %s", e)
             return None
+
+    def _extract_relations(self, record) -> list:
+        """Reconstruct Relation objects from the optional ``rels`` query field.
+
+        The retrieve() and search_graph() callers below now OPTIONAL MATCH
+        outgoing RELATES edges and ``collect(...)`` them into ``record["rels"]``.
+        This helper turns that collect result back into Relation objects so
+        the returned Memory has a populated ``metadata.relations`` list.
+        Without this, cascade-forget in-edge discovery on Neo4j was silently
+        a no-op (BIDIRECTIONAL degraded to OUTGOING).
+
+        Returns an empty list when ``rels`` is missing — back-compat with
+        any caller that hasn't updated its query yet.
+        """
+        rels_raw = record.get("rels") if isinstance(record, dict) else None
+        if not rels_raw:
+            return []
+        out: list = []
+        for r in rels_raw:
+            target = r.get("target_id") or r.get("target")
+            if not target:
+                continue
+            out.append(Relation(
+                relation_type=r.get("type") or r.get("relation_type") or "relates",
+                target_memory_id=str(target),
+                bidirectional=r.get("bidirectional", False),
+                strength=r.get("strength", 1.0),
+            ))
+        return out
 
     def store(self, memory: Memory) -> None:
         if not self._available or not self._driver:
@@ -213,21 +253,42 @@ class Neo4jStore(MemoryStore):
             logger.exception("Neo4j store failed for memory %s", memory.id)
 
     def retrieve(self, memory_id: str) -> Optional[Memory]:
+        """Read a memory by id, including its outgoing RELATES edges.
+
+        The OPTIONAL MATCH on ``(:Memory)-[:RELATES]->(related:Memory)``
+        loads the out-edge list so cascade-forget can correctly enumerate
+        in-edges (when used with the same join in the in-edge scan).
+        Without this join, ``_record_to_memory`` returned
+        ``relations == []`` and cascade in-edge discovery on Neo4j was
+        silently a no-op.
+        """
         if not self._available or not self._driver:
             return None
         try:
             with self._driver.session(database=self._database) as session:
                 result = session.run(
-                    "MATCH (m:Memory {id: $id}) RETURN m",
-                    id=memory_id
+                    """
+                    MATCH (m:Memory {id: $id})
+                    OPTIONAL MATCH (m)-[r:RELATES]->(related:Memory)
+                    RETURN m,
+                           collect({
+                               type: r.type,
+                               target_id: related.id,
+                               strength: r.strength
+                           }) AS rels
+                    """,
+                    id=memory_id,
                 )
                 record = result.single()
                 if record:
                     # Update accessed_at
-                    session.run("""
+                    session.run(
+                        """
                         MATCH (m:Memory {id: $id})
                         SET m.accessed_at = $now
-                    """, id=memory_id, now=TemporalAnchor().created_at)
+                        """,
+                        id=memory_id, now=TemporalAnchor().created_at,
+                    )
                     return self._record_to_memory(record)
                 return None
         except Exception:
@@ -392,6 +453,59 @@ class Neo4jStore(MemoryStore):
                 return count
         except Exception:
             logger.exception("Neo4j delete_expired failed")
+            return 0
+
+    def count(self) -> int:
+        """O(1) Cypher ``MATCH (n:Memory) RETURN count(n)``."""
+        if not self._available or not self._driver:
+            return 0
+        try:
+            with self._driver.session(database=self._database) as session:
+                result = session.run("MATCH (m:Memory) RETURN count(m) AS n")
+                record = result.single()
+                return int(record["n"]) if record else 0
+        except Exception:
+            logger.exception("Neo4j count() failed")
+            return 0
+
+    def delete_by_filter(self, field: str, value: Any) -> int:
+        """O(matches) Cypher DELETE WHERE.
+
+        Same whitelist as SQLite / PG; uses the (already-indexed)
+        context property as the match key.
+        """
+        allowed = {"agent_id", "agent_type", "session_id",
+                   "user_id", "team_id", "project_id"}
+        if field not in allowed:
+            logger.warning(
+                "Neo4jStore.delete_by_filter: field %r not in whitelist %s",
+                field, sorted(allowed),
+            )
+            return 0
+        if not self._available or not self._driver:
+            return 0
+        try:
+            with self._driver.session(database=self._database) as session:
+                # Parameterized to prevent Cypher injection.
+                result = session.run(
+                    f"""
+                    MATCH (m:Memory {{{field}: $value}})
+                    OPTIONAL MATCH (m)-[r]-()
+                    WITH m, r
+                    DELETE r, m
+                    RETURN count(m) AS deleted
+                    """,
+                    value=value,
+                )
+                record = result.single()
+                deleted = int(record["deleted"]) if record else 0
+                logger.info(
+                    "Neo4j deleted %d memories where %s = %r",
+                    deleted, field, value,
+                )
+                return deleted
+        except Exception:
+            logger.exception("Neo4j delete_by_filter(%s=%r) failed", field, value)
             return 0
 
     def get_related_memories(self, memory_id: str, relation_type: Optional[str] = None, min_strength: float = 0.0) -> List[Memory]:

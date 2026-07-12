@@ -70,3 +70,36 @@ class MemoryStore(ABC):
         instance. Should NOT raise on already-closed resources.
         """
         ...
+
+    @abstractmethod
+    def count(self) -> int:
+        """Return the total number of memories in this tier.
+
+        Must be O(1) or O(1) round-trip — do NOT materialize the full
+        result set to count it. Implementations should use native
+        COUNT queries (SQLite / PostgreSQL), DBSIZE / SCAN
+        cardinality (Redis), ``collection.count()`` (ChromaDB),
+        ``MATCH (n) RETURN count(n)`` (Neo4j), or in-process dict size
+        (InMemory). This replaces the previous O(N)
+        ``len(list_all(limit=999999))`` pattern in
+        ``UniversalMemorySystem.get_stats()``.
+        """
+        ...
+
+    @abstractmethod
+    def delete_by_filter(self, field: str, value: Any) -> int:
+        """Delete all memories whose ``context.<field>`` equals ``value``.
+
+        ``field`` is the dotted path inside ``Memory.context`` (e.g.
+        ``"agent_id"``, ``"project_id"``, ``"user_id"``). For JSON
+        backends the implementation should use a native indexed query
+        (``WHERE json_extract(context, '$.<field>') = ?`` on SQLite,
+        ``WHERE context->>'<field>' = ?`` on PostgreSQL) so the
+        operation is O(matches) rather than O(table).
+
+        Returns the count of memories deleted (0 if no matches).
+
+        Implementations should swallow per-row failures and continue,
+        but accumulate them so the count reflects actual deletions.
+        """
+        ...

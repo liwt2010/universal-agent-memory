@@ -229,6 +229,51 @@ class ChromaDBStore(MemoryStore):
         # ChromaDB doesn't have TTL natively; implement via metadata filtering
         return 0
 
+    def count(self) -> int:
+        """O(1) ``collection.count()`` — fast native count."""
+        if self._collection is None:
+            return 0
+        try:
+            return int(self._collection.count())
+        except Exception:
+            logger.exception("ChromaDB count() failed")
+            return 0
+
+    def delete_by_filter(self, field: str, value: Any) -> int:
+        """O(matches) ``collection.delete(where={field: value})``.
+
+        ChromaDB's ``where`` filter requires exact-match on indexed
+        metadata. Only fields that have been stored as metadata
+        attributes can be filtered; the whitelist mirrors the
+        ``MemoryStore.context`` schema.
+        """
+        allowed = {"agent_id", "agent_type", "session_id",
+                   "user_id", "team_id", "project_id"}
+        if field not in allowed:
+            logger.warning(
+                "ChromaDBStore.delete_by_filter: field %r not in whitelist %s",
+                field, sorted(allowed),
+            )
+            return 0
+        if self._collection is None:
+            return 0
+        try:
+            # First, count how many we'd delete so we can return an
+            # accurate count (ChromaDB's delete() doesn't return a count).
+            pre = self._collection.get(where={field: value})
+            ids = pre.get("ids", []) or []
+            if not ids:
+                return 0
+            self._collection.delete(where={field: value})
+            logger.info(
+                "ChromaDB deleted %d memories where %s = %r",
+                len(ids), field, value,
+            )
+            return len(ids)
+        except Exception:
+            logger.exception("ChromaDB delete_by_filter(%s=%r) failed", field, value)
+            return 0
+
     def close(self) -> None:
         """Release the underlying ChromaDB client.
 

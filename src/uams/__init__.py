@@ -5,9 +5,9 @@ Decoupled from coding, applicable to personal assistants, NPCs,
 customer service, research agents, multi-agent systems, etc.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
-from uams.system import UniversalMemorySystem
+from uams.system import UniversalMemorySystem, ConsolidateResult
 from uams.core.enums import MemoryType, EventType, PrivacyLevel
 from uams.core.models import (
     MemoryId,
@@ -30,6 +30,7 @@ from uams.multi_agent.coordinator import MultiAgentCoordinator, Lease, Signal
 
 __all__ = [
     "UniversalMemorySystem",
+    "ConsolidateResult",
     "MemoryType",
     "EventType",
     "PrivacyLevel",

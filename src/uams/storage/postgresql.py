@@ -503,6 +503,64 @@ class PostgreSQLStore(MemoryStore):
         finally:
             self._put_conn(conn)
 
+    def count(self) -> int:
+        """O(1) round-trip SELECT COUNT(*) — replaces list_all(999999)."""
+        conn = self._get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT COUNT(*) FROM {self._table_name}")
+                row = cur.fetchone()
+                return int(row[0]) if row else 0
+        except Exception:
+            logger.exception("PostgreSQL count() failed for %s", self._table_name)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return 0
+        finally:
+            self._put_conn(conn)
+
+    def delete_by_filter(self, field: str, value: Any) -> int:
+        """O(matches) DELETE WHERE <field> = %s on the flat context column.
+
+        The GIN / B-tree indexes on agent_id / session_id / etc. make
+        this O(log N + matches) on PG; without the indexes it would
+        still be O(N) but at least on the server rather than O(N) on
+        the wire.
+        """
+        allowed = {"agent_id", "agent_type", "session_id",
+                   "user_id", "team_id", "project_id"}
+        if field not in allowed:
+            logger.warning(
+                "PostgreSQLStore.delete_by_filter: field %r not in whitelist %s",
+                field, sorted(allowed),
+            )
+            return 0
+        conn = self._get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"DELETE FROM {self._table_name} WHERE {field} = %s",
+                    (value,),
+                )
+                deleted = cur.rowcount
+            conn.commit()
+            logger.info(
+                "PostgreSQL deleted %d memories from %s where %s = %r",
+                deleted, self._table_name, field, value,
+            )
+            return deleted
+        except Exception:
+            logger.exception("PostgreSQL delete_by_filter(%s=%r) failed", field, value)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return 0
+        finally:
+            self._put_conn(conn)
+
     def close(self) -> None:
         """Close all connections in the pool."""
         if self._pool:
