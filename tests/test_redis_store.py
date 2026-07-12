@@ -24,6 +24,56 @@ from uams.core.models import (
 from uams.core.enums import MemoryType, PrivacyLevel
 
 
+class FakePipeline:
+    """In-memory fake Redis pipeline for testing. Queues commands, executes in order."""
+
+    def __init__(self, fake: "FakeRedis", transaction: bool = True):
+        self._fake = fake
+        self._commands: list = []
+        self._transaction = transaction
+
+    def hset(self, key, *args, **kwargs):
+        self._commands.append(("hset", key, args, kwargs))
+        return self
+
+    def expire(self, key, seconds):
+        self._commands.append(("expire", key, seconds))
+        return self
+
+    def zadd(self, key, mapping):
+        self._commands.append(("zadd", key, mapping))
+        return self
+
+    def delete(self, *keys):
+        self._commands.append(("delete", keys))
+        return self
+
+    def zrem(self, key, *members):
+        self._commands.append(("zrem", key, members))
+        return self
+
+    def execute(self):
+        results = []
+        for cmd in self._commands:
+            name = cmd[0]
+            if name == "hset":
+                _, key, args, kwargs = cmd
+                results.append(self._fake.hset(key, *args, **kwargs))
+            elif name == "expire":
+                _, key, seconds = cmd
+                results.append(self._fake.expire(key, seconds))
+            elif name == "zadd":
+                _, key, mapping = cmd
+                results.append(self._fake.zadd(key, mapping))
+            elif name == "delete":
+                _, keys = cmd
+                results.append(self._fake.delete(*keys))
+            elif name == "zrem":
+                _, key, members = cmd
+                results.append(self._fake.zrem(key, *members))
+        return results
+
+
 class FakeRedis:
     """In-memory fake Redis for testing."""
 
@@ -35,6 +85,9 @@ class FakeRedis:
 
     def ping(self):
         return True
+
+    def pipeline(self, transaction=True):
+        return FakePipeline(self, transaction=transaction)
 
     def hset(self, key, *args, **kwargs):
         if key not in self._hashes:

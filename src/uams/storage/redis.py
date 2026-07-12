@@ -201,27 +201,32 @@ class RedisStore(MemoryStore):
         if not self._available or not self._client:
             return
         try:
-            with self._lock:
-                key = self._memory_key(str(memory.id))
-                data = self._memory_to_dict(memory)
-                self._client.hset(key, mapping=data)
-                
-                # Set TTL if configured or memory has expires_at
-                ttl = self._ttl_seconds
-                if memory.anchor.expires_at:
-                    ttl_seconds = memory.anchor.expires_at - memory.anchor.created_at
-                    if ttl is None or ttl_seconds < ttl:
-                        ttl = ttl_seconds
-                
-                if ttl and ttl > 0:
-                    self._client.expire(key, int(ttl))
-                    # Also add to expiry ZSET for tracking
-                    self._client.zadd(
-                        self._expiry_zset_key,
-                        {str(memory.id): memory.anchor.expires_at or (memory.anchor.created_at + ttl)}
-                    )
-                
-                logger.debug("Stored memory %s in Redis (key=%s)", memory.id, key)
+            # redis-py is thread-safe (ConnectionPool has its own lock),
+            # so we don't wrap in self._lock anymore — that was the root
+            # cause of 7.6 ops/sec on 32-worker stress tests (32x serial
+            # bottleneck). Use a pipeline to collapse HSET + EXPIRE + ZADD
+            # into 1 round-trip instead of 3.
+            key = self._memory_key(str(memory.id))
+            data = self._memory_to_dict(memory)
+
+            # Compute TTL once
+            ttl = self._ttl_seconds
+            if memory.anchor.expires_at:
+                ttl_seconds = memory.anchor.expires_at - memory.anchor.created_at
+                if ttl is None or ttl_seconds < ttl:
+                    ttl = ttl_seconds
+            apply_ttl = bool(ttl and ttl > 0)
+
+            pipe = self._client.pipeline(transaction=False)
+            pipe.hset(key, mapping=data)
+            if apply_ttl:
+                pipe.expire(key, int(ttl))
+                pipe.zadd(
+                    self._expiry_zset_key,
+                    {str(memory.id): memory.anchor.expires_at or (memory.anchor.created_at + ttl)},
+                )
+            pipe.execute()
+            logger.debug("Stored memory %s in Redis (key=%s)", memory.id, key)
         except Exception:
             logger.exception("Redis store failed for memory %s", memory.id)
 
@@ -229,16 +234,17 @@ class RedisStore(MemoryStore):
         if not self._available or not self._client:
             return None
         try:
-            with self._lock:
-                key = self._memory_key(memory_id)
-                data = self._client.hgetall(key)
-                if not data:
-                    return None
-                
-                # Update accessed_at
-                self._client.hset(key, b"accessed_at", str(TemporalAnchor().created_at).encode("utf-8"))
-                
-                return self._dict_to_memory(data)
+            key = self._memory_key(memory_id)
+            # HGETALL + touched-time HSET collapsed into 1 round-trip via pipeline.
+            # HGETALL first so we can short-circuit on missing keys without
+            # paying the HSET round-trip.
+            data = self._client.hgetall(key)
+            if not data:
+                return None
+            pipe = self._client.pipeline(transaction=False)
+            pipe.hset(key, b"accessed_at", str(TemporalAnchor().created_at).encode("utf-8"))
+            pipe.execute()
+            return self._dict_to_memory(data)
         except Exception:
             logger.exception("Redis retrieve failed for %s", memory_id)
             return None
@@ -247,12 +253,15 @@ class RedisStore(MemoryStore):
         if not self._available or not self._client:
             return False
         try:
-            with self._lock:
-                key = self._memory_key(memory_id)
-                result = self._client.delete(key)
-                self._client.zrem(self._expiry_zset_key, memory_id)
-                logger.debug("Deleted memory %s from Redis (deleted=%d)", memory_id, result)
-                return result > 0
+            key = self._memory_key(memory_id)
+            # DELETE + ZREM collapsed into 1 round-trip via pipeline.
+            pipe = self._client.pipeline(transaction=False)
+            pipe.delete(key)
+            pipe.zrem(self._expiry_zset_key, memory_id)
+            results = pipe.execute()
+            deleted = results[0] if results else 0
+            logger.debug("Deleted memory %s from Redis (deleted=%d)", memory_id, deleted)
+            return deleted > 0
         except Exception:
             logger.exception("Redis delete failed for %s", memory_id)
             return False
@@ -262,29 +271,28 @@ class RedisStore(MemoryStore):
         if not self._available or not self._client:
             return []
         try:
-            with self._lock:
-                results = []
-                cursor = 0
-                pattern = f"{self._key_prefix}*"
-                query_lower = query.lower()
-                
-                while True:
-                    cursor, keys = self._client.scan(cursor, match=pattern, count=100)
-                    for key in keys:
-                        data = self._client.hgetall(key)
-                        if not data:
-                            continue
-                        raw = data.get(b"raw", b"").decode("utf-8", errors="ignore").lower()
-                        if any(term in raw for term in query_lower.split()):
-                            mem = self._dict_to_memory(data)
-                            if mem:
-                                results.append(mem)
-                            if len(results) >= k:
-                                break
-                    if cursor == 0 or len(results) >= k:
-                        break
-                
-                return results[:k]
+            results = []
+            cursor = 0
+            pattern = f"{self._key_prefix}*"
+            query_lower = query.lower()
+
+            while True:
+                cursor, keys = self._client.scan(cursor, match=pattern, count=100)
+                for key in keys:
+                    data = self._client.hgetall(key)
+                    if not data:
+                        continue
+                    raw = data.get(b"raw", b"").decode("utf-8", errors="ignore").lower()
+                    if any(term in raw for term in query_lower.split()):
+                        mem = self._dict_to_memory(data)
+                        if mem:
+                            results.append(mem)
+                        if len(results) >= k:
+                            break
+                if cursor == 0 or len(results) >= k:
+                    break
+
+            return results[:k]
         except Exception:
             logger.exception("Redis keyword search failed")
             return []
@@ -341,25 +349,24 @@ class RedisStore(MemoryStore):
         if not self._available or not self._client:
             return []
         try:
-            with self._lock:
-                results = []
-                cursor = 0
-                pattern = f"{self._key_prefix}*"
-                
-                while True:
-                    cursor, keys = self._client.scan(cursor, match=pattern, count=100)
-                    for key in keys:
-                        data = self._client.hgetall(key)
-                        if data:
-                            mem = self._dict_to_memory(data)
-                            if mem:
-                                results.append(mem)
-                    if cursor == 0:
-                        break
-                
-                # Sort by created_at descending
-                results.sort(key=lambda m: m.anchor.created_at, reverse=True)
-                return results[:limit]
+            results = []
+            cursor = 0
+            pattern = f"{self._key_prefix}*"
+
+            while True:
+                cursor, keys = self._client.scan(cursor, match=pattern, count=100)
+                for key in keys:
+                    data = self._client.hgetall(key)
+                    if data:
+                        mem = self._dict_to_memory(data)
+                        if mem:
+                            results.append(mem)
+                if cursor == 0:
+                    break
+
+            # Sort by created_at descending
+            results.sort(key=lambda m: m.anchor.created_at, reverse=True)
+            return results[:limit]
         except Exception:
             logger.exception("Redis recent memories failed")
             return []
@@ -369,16 +376,15 @@ class RedisStore(MemoryStore):
         if not self._available or not self._client:
             return 0
         try:
-            with self._lock:
-                now = TemporalAnchor().created_at
-                # Get expired IDs from ZSET
-                expired_ids = self._client.zrangebyscore(
-                    self._expiry_zset_key, 0, now
-                )
-                count = 0
-                for mid in expired_ids:
-                    mid_str = mid.decode("utf-8") if isinstance(mid, bytes) else mid
-                    if self.delete(mid_str):
+            now = TemporalAnchor().created_at
+            # Get expired IDs from ZSET
+            expired_ids = self._client.zrangebyscore(
+                self._expiry_zset_key, 0, now
+            )
+            count = 0
+            for mid in expired_ids:
+                mid_str = mid.decode("utf-8") if isinstance(mid, bytes) else mid
+                if self.delete(mid_str):
                         count += 1
                 logger.debug("Redis deleted %d expired memories", count)
                 return count
