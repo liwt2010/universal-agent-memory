@@ -56,7 +56,7 @@ UAMS 将记忆基础设施从智能体框架和应用领域中解耦出来。它
 | **Token 预算注入** | 自动将检索结果压缩到 LLM 上下文窗口限制内 |
 | **可插拔存储** | 内存存储（默认）、ChromaDB、SQLite、PostgreSQL+pgvector、Neo4j |
 | **remember() 语义级去重（opt-in）** | 新事实与已有语义记忆余弦相似度 ≥ `remember_dedup_threshold` 时,返回已有 `MemoryId` 而不存新副本 |
-| **100k 并发压测（A+ 必备）** | `benchmarks/stress_test.py` 跑 100k 操作并发,JSON 报告上传 CI artifact ([docs/STRESS_TEST.md](docs/STRESS_TEST.md)) |
+| **100k 并发压测（A+ 必备）** | `benchmarks/stress_test.py` 跑 100k 操作并发,JSON 报告上传 CI artifact ([docs/STRESS_TEST.md](docs/STRESS_TEST.md))。v6 修后 PostgreSQL + Neo4j 跑到 100k/100k ops 0% err,详见 [docs/STRESS_TEST.md](docs/STRESS_TEST.md) "Diagnosed bugs" 段 |
 | **框架无关** | 兼容 Claude、GPT、LangChain、AutoGen 或自研智能体 |
 
 ---
@@ -392,7 +392,7 @@ universal-agent-memory/
 │   ├── research_agent.py
 │   ├── multi_agent.py
 │   └── _token_compression_demo.py
-├── tests/                  # 375 个测试
+├── tests/                  # 426 个测试
 │   ├── test_system.py
 │   ├── test_chaos.py
 │   ├── test_aplus.py
@@ -464,7 +464,7 @@ python tests/test_system.py
 | **6 后端真实验证(CI 9/9 green)** | **PG / ChromaDB / Redis / Neo4j / SQLite / InMemory 全部真实 service 跑通** |
 | **级联删除** | **三策略 + visit-set + 最大深度上限 + 跨层隔离 + 最佳努力删除 + JSONL 审计** |
 
-**测试规模**:375 测试(本地 32 skip:无 PG/Redis/Neo4j service 时跳过真实后端;CI 上全部跑通)。
+**测试规模**:426 测试(本地 32 skip:无 PG/Redis/Neo4j service 时跳过真实后端;CI 上全部跑通)。v6 新增 51 个:SQLite 并发 3 + FTS5 phrase 6 + Redis inverted index 4 + 100k stress 集成 11 + 其他 27。
 
 ---
 
