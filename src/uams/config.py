@@ -195,6 +195,13 @@ class UAMSConfig:
     llm_compression_target_ratio: float = 0.3
 
     # --- Audit / Observability ---
+    # NOTE: enable_audit_log + audit_log_path are READ-ONLY for now.
+    # They were declared as the operator-facing toggle for an audit
+    # writer that was never implemented in v0.1 - v0.5; cascade-level
+    # auditing uses the separate cascade_audit_log_path below. These
+    # fields stay in the dataclass to preserve backward compatibility
+    # with deployment scripts that reference them, but no code in
+    # src/ reads them. A future release may wire them to a writer.
     enable_audit_log: bool = False
     audit_log_path: Optional[str] = None
     enable_metrics: bool = True

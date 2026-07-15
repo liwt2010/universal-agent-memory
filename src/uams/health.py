@@ -125,9 +125,20 @@ class HealthHandler(BaseHTTPRequestHandler):
 class HealthServer:
     """Background HTTP server for health checks and metrics."""
 
-    def __init__(self, port: int = 3111, metrics: Optional[MetricsCollector] = None):
+    def __init__(
+        self,
+        port: int = 3111,
+        metrics: Optional[MetricsCollector] = None,
+        histogram_max_entries: int = 10000,
+    ):
         self._port = port
-        self._metrics = metrics or MetricsCollector()
+        # Use the explicit metrics collector if the caller built one
+        # (e.g. with a custom histogram cap from UAMSConfig); otherwise
+        # build one honouring the passed-in cap so callers without a
+        # pre-built metrics object can still tune ring-buffer size.
+        self._metrics = metrics or MetricsCollector(
+            max_histogram_entries=histogram_max_entries,
+        )
         self._server: Optional[HTTPServer] = None
         self._thread: Optional[threading.Thread] = None
 
