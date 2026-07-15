@@ -5,6 +5,124 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-07-15
+
+### Security Hardening (closing real attack surfaces)
+
+This release closes several real attack surfaces identified in an in-progress
+hardening pass that was sitting in the working tree. Each change was reviewed
+before commit. **This is a breaking release** because two historical
+"compatibility shims" are removed (see Breaking Changes below).
+
+#### Added — config-level input validation
+
+- **`UAMSConfig.validate()` now rejects unsafe identifiers and paths** before
+  any DDL / Redis key / log-file operation runs. New constraints:
+  - `postgresql_table` must match `[A-Za-z0-9_-]+` (was unvalidated; user input
+    could inject arbitrary DDL fragments).
+  - `redis_key_prefix` and `redis_cache_key_prefix` must match
+    `[A-Za-z0-9_:-]+` (colon allowed for Redis namespace conventions).
+  - `cascade_audit_log_path` and `cascade_orphan_log_path` must not contain
+    NUL, `|`, or `;` (defence-in-depth against accidental shell-meta
+    interpolation).
+  - `cascade_max_depth` is now bounded to `0..8` (was unbounded; the
+    documented default was 4 but nothing enforced it).
+  - `cascade_in_edge_strategy` is validated against `scan | index | auto`.
+
+#### Added — JSON-only embedding reader
+
+- **`uams.utils.embedding_serde.deserialize_embedding` no longer falls back to
+  `pickle.loads`**. Legacy pickle-encoded blobs are rejected with an explicit
+  ERROR log and treated as `None`. This closes a remote-code-execution
+  vector: an attacker who could write to a shared store (PostgreSQL, Redis,
+  SQLite file) would previously get arbitrary Python execution on the next
+  `retrieve()`. Migration script is documented in the module docstring.
+- `RateLimiter` is now thread-safe (added `threading.Lock` around the
+  check-then-append path). A regression test (8 threads × 100 calls under
+  a tight limit) verifies exactly the configured number pass.
+
+#### Fixed — silent data loss in backup / restore
+
+- **`Memory.to_json` and `Memory.from_json` now round-trip `embedding` and
+  `relations`**. The previous implementation silently dropped both, which
+  caused two real bugs:
+  - `BackupManager.backup_to_file` / `restore_from_file` lost vector search
+    capability on roundtrip.
+  - `CascadeForgetter` could not discover in-edges from a restored backup,
+    breaking GDPR Article 17 "right to be forgotten" traversal.
+- Backward-compatible read: missing keys default to `None` / `[]` so old
+  backups still load (they just lose the dropped fields).
+
+#### Added — multi-tenant isolation primitive
+
+- **`AgentContext.tenant_id`** added for multi-tenant isolation. Combined
+  with the `delete_by_project_id(project_id, tenant_id=...)` API added in
+  v0.4.0, this lets cloud deployments cleanly scope memory deletion to a
+  single tenant.
+
+#### Removed — keyword-based SQL sanitiser
+
+- **`InputValidator.sanitize_sql` removed**. Keyword denylists are a known
+  anti-pattern: they give false confidence while missing real attacks (bypass
+  via `||`, `&&`, mixed case, comments). UAMS storage backends use
+  parameterised queries everywhere, so this denylist was redundant false
+  safety. Replaced with `InputValidator.is_safe_identifier(value)` — a
+  whitelist grammar check for IDs that genuinely do get interpolated into
+  DDL or Redis key prefixes.
+- `InputValidator.rate_limiter(...)` factory is preserved (and now
+  thread-safe).
+
+### Breaking Changes
+
+- **`InputValidator.sanitize_sql` is gone**. Any caller that was using it
+  should switch to parameterised queries (the actual defence UAMS relies on)
+  or `InputValidator.is_safe_identifier(...)` for DDL-interpolated values.
+- **Pre-v0.4.0 backups with pickle-encoded embeddings** round-trip with
+  `embedding=None`. Operators with such data must run the one-off
+  migration script in the `embedding_serde` docstring before deploying
+  v0.5.0.
+
+### Test coverage added
+
+5 new tests across `test_aplus.py` / `test_config_validation.py` /
+`test_embedding_serde.py` covering identifier safety, cascade bounds,
+audit-path safety, embedding fail-secure paths, and `RateLimiter` thread
+safety under concurrent load.
+
+Local: 483 → **488 tests pass** (+5, 0 regressions).
+
+## [0.4.0] - 2026-07-12
+
+### Public API expansion
+
+New public APIs for bulk deletion and consolidation telemetry:
+
+- `ConsolidateResult` dataclass returned by `consolidate()` (replaces the
+  previous `-> None` return). Fields: `session_id`, `source_event_count`,
+  `episodic_memory_id`, `semantic_facts`, `procedural_patterns`,
+  `duration_ms`, `error`.
+- `revoke_agent(agent_id, cascade=...)` and `revoke_project(project_id,
+  cascade=...)` — bulk delete across all tiers by `context.agent_id` /
+  `context.project_id`. Thin wrappers over the new
+  `MemoryStore.delete_by_filter(field, value)` abstraction.
+- `delete_by_project_id(project_id, tenant_id=None)` — narrower
+  multi-tenant-safe deletion.
+- `UniversalMemorySystem.get_stats(scan_limit=1000)` — now uses native
+  `MemoryStore.count()` instead of `len(list_all(limit=999999))`, which
+  was O(N) on the wire and silently returned `{}` on SQLite once the row
+  count exceeded `SQLITE_MAX_VARIABLE_NUMBER`.
+
+### Storage layer abstraction
+
+- `MemoryStore.count() -> int` — new abstract method. Implementations:
+  `SELECT COUNT(*)` (SQLite / PostgreSQL), `MATCH (n) RETURN count(n)`
+  (Neo4j), `collection.count()` (ChromaDB), `len(self._memories)`
+  (InMemory), `SCAN MATCH <prefix>*` (Redis).
+- `MemoryStore.delete_by_filter(field, value) -> int` — new abstract
+  method. Implementations: indexed column DELETE (SQLite / PG), Cypher
+  MATCH / DELETE (Neo4j), `collection.delete(where=...)` (ChromaDB),
+  in-memory filter (InMemory), SCAN + HGETALL filter (Redis).
+
 ## [0.3.0] - 2026-07-12
 
 ### Security & Reliability Hardening

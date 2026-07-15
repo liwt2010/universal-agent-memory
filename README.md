@@ -34,7 +34,35 @@ It silently captures what your agent does, compresses it into a searchable memor
 
 ---
 
-## 🆕 What's new in 7-12 (v0.3)
+## 🆕 What's new in 7-15 (v0.5)
+
+| Change | What | Why |
+|--------|------|-----|
+| **`UAMSConfig.validate()` rejects unsafe identifiers / paths** | New constraints on `postgresql_table`, `redis_key_prefix`, `cascade_audit_log_path`, `cascade_max_depth`, `cascade_in_edge_strategy` | Closes real attack surfaces: DDL injection, Redis key injection, unbounded cascade depth. Configuration-level guard. |
+| **Embedding reader is JSON-only** | `pickle.loads` fallback permanently removed | Was an RCE vector if an attacker could write to a shared store. Migrate pre-v0.4.0 data via the script in the `embedding_serde` docstring. |
+| **`Memory.to_json` / `from_json` round-trip `embedding` + `relations`** | Both fields now serialize | Previous behaviour silently dropped them, breaking backup/restore vector search AND cascade-forget in-edge discovery after restore. |
+| **`RateLimiter` is thread-safe** | Added internal lock; regression test under 8×100 concurrent calls | P2 race that the original audit flagged but did not fix. |
+| `InputValidator.sanitize_sql` removed | Replaced by `is_safe_identifier` whitelist | Keyword denylists are an anti-pattern that gives false confidence. UAMS already uses parameterised queries. |
+| **`AgentContext.tenant_id`** | Multi-tenant isolation primitive | Pairs with the v0.4.0 `delete_by_project_id(project_id, tenant_id=...)` API. |
+| 488 tests (+5) | New: identifier safety, audit-path safety, cascade bounds, embedding fail-secure, RateLimiter concurrency | No regressions. Two pre-existing test failures remain (`test_large_chinese_text` perf threshold, `test_shutdown_persists_working` test-logic bug). |
+
+**⚠️ v0.5.0 is a breaking release.** Two historical "compatibility shims" are
+removed: `InputValidator.sanitize_sql` and the `pickle.loads` fallback in
+`embedding_serde`. See [CHANGELOG.md](CHANGELOG.md) for the migration
+recipe.
+
+## 🆕 What's new in 7-12 (v0.4 — bulk deletion + consolidation telemetry)
+
+| Change | What | Why |
+|--------|------|-----|
+| **`ConsolidateResult` returned by `consolidate()`** | New dataclass with `source_event_count`, `episodic_memory_id`, `semantic_facts`, `procedural_patterns`, `duration_ms`, `error` | Replaces the `-> None` return so callers don't have to peek private state. |
+| **`revoke_agent(agent_id, cascade=...)` / `revoke_project(project_id, cascade=...)`** | Bulk delete across all tiers by `context.agent_id` / `context.project_id` | Thin wrappers over the new `MemoryStore.delete_by_filter(field, value)` abstraction; replaces O(N) `list_all() + filter + delete` callers. |
+| **`delete_by_project_id(project_id, tenant_id=None)`** | Narrower multi-tenant-safe deletion | When `tenant_id` is given, only memories matching BOTH project and tenant are deleted. |
+| **`MemoryStore.count()` + 6 store implementations** | New abstract method; SQLite / PG use `SELECT COUNT(*)`, Neo4j uses `MATCH (n) RETURN count(n)`, ChromaDB uses `collection.count()`, Redis uses `SCAN MATCH`, InMemory uses `len()` | Replaces `len(list_all(limit=999999))` which was O(N) on the wire and silently returned `{}` on SQLite once the row count exceeded `SQLITE_MAX_VARIABLE_NUMBER`. |
+| **`get_stats(scan_limit=1000)`** | Caps reported counts | Operators can tune the safety bound without changing call sites. |
+| 483 tests | New: `ConsolidateResult`, `count` per backend, `delete_by_filter` per backend, `revoke_*` wrappers | No regressions. |
+
+## What's new in 7-12 (v0.3)
 
 | Change | What | Why |
 |--------|------|-----|

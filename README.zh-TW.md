@@ -116,6 +116,24 @@ receipt = {
 
 ---
 
+## 🆕 7-15 新增（v0.5 安全加固）
+
+| 改動 | 內容 | 原因 |
+|------|------|------|
+| **`UAMSConfig.validate()` 拒絕不安全的識別符與路徑** | 新增 `postgresql_table` / `redis_key_prefix` / `cascade_audit_log_path` / `cascade_max_depth` / `cascade_in_edge_strategy` 校驗 | 關閉真實攻擊面：DDL 注入、Redis 鍵注入、無界級聯深度。設定層防線。 |
+| **Embedding 讀取改為 JSON-only** | 永久移除 `pickle.loads` fallback | 一旦攻擊者可寫入共用儲存，即可 RCE。舊資料需執行 `embedding_serde` docstring 中的遷移腳本。 |
+| **`Memory.to_json` / `from_json` 完整序列化 `embedding` + `relations`** | 之前會靜默丟失，導致 backup/restore 後向量搜尋失效 + cascade-forget in-edge 不可達 | 真實資料丟失 bug 修復。 |
+| **`RateLimiter` 執行緒安全** | 加鎖 + 8×100 並發迴歸測試 | 第二輪稽核標註但未修的 P2 race。 |
+| 移除 `InputValidator.sanitize_sql` | 改為 `is_safe_identifier` 白名單 | 關鍵字黑名單是反模式。UAMS 全程用參數化查詢。 |
+| **`AgentContext.tenant_id`** | 多租戶隔離原語 | 與 v0.4.0 的 `delete_by_project_id(project_id, tenant_id=...)` 配套。 |
+| 488 測試 (+5) | 新增：identifier safety、audit-path safety、cascade bounds、embedding fail-secure、RateLimiter 並發 | 無迴歸。兩個預先存在的失敗（`test_large_chinese_text`、`test_shutdown_persists_working`）與本批無關。 |
+
+**⚠️ v0.5.0 為 breaking release。** 移除了兩個歷史「相容墊片」：
+`InputValidator.sanitize_sql` 和 `embedding_serde` 的 `pickle.loads` fallback。
+遷移方案見 [CHANGELOG.md](CHANGELOG.md)。
+
+---
+
 ## 快速開始
 
 ```python
