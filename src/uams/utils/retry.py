@@ -9,7 +9,7 @@ from __future__ import annotations
 import functools
 import time
 import threading
-from typing import Any, Callable, Type
+from typing import Any, Callable
 
 from uams.utils.logging import get_logger
 

@@ -1,7 +1,5 @@
 """Storage layer for UAMS. Provides pluggable backends for each memory tier."""
 
-from typing import Any
-
 from uams.storage.base import MemoryStore
 from uams.storage.memory import InMemoryStore
 

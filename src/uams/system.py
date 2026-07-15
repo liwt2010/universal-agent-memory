@@ -9,7 +9,6 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable
 
 from uams.llm.client import LLMClient
 from uams.core.enums import EventType, MemoryType, PrivacyLevel
