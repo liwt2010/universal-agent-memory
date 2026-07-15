@@ -12,13 +12,22 @@ from typing import Any, Callable
 import hashlib
 import logging
 import threading
+import asyncio
 import time
 
 logger = logging.getLogger(__name__)
 
 
 class LLMClient(ABC):
-    """Abstract LLM client. Implementations live in this module."""
+    """Abstract LLM client. Implementations live in this module.
+
+    Both ``chat`` (sync) and ``achat`` (async) are part of the interface.
+    Implementations that cannot provide a true async path (because
+    the underlying SDK is blocking) should raise
+    ``NotImplementedError`` from ``achat`` so callers fall back to
+    ``asyncio.to_thread(client.chat, ...)`` rather than silently
+    blocking the event loop.
+    """
 
     @abstractmethod
     def chat(
@@ -30,6 +39,23 @@ class LLMClient(ABC):
         timeout: float = 30.0,
     ) -> str:
         """Send a chat completion request and return the assistant message content."""
+
+    async def achat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+        timeout: float = 30.0,
+    ) -> str:
+        """Async chat completion. Default impl runs ``chat`` on the default
+        executor. Subclasses that have a true async transport should
+        override to avoid the executor hop.
+        """
+        return await asyncio.to_thread(
+            self.chat, messages,
+            max_tokens=max_tokens, temperature=temperature, timeout=timeout,
+        )
 
     def is_available(self) -> bool:
         """Return True if this client can serve requests."""
@@ -71,7 +97,10 @@ class OpenAICompatibleClient(LLMClient):
             timeout=timeout,
             max_retries=max_retries,
         )
+        self._api_key = api_key
+        self._base_url = base_url.rstrip("/")
         self._model = model
+        self._timeout = float(timeout)
 
     def chat(self, messages, *, max_tokens=1024, temperature=0.0, timeout=30.0):
         resp = self._client.chat.completions.create(
@@ -83,11 +112,68 @@ class OpenAICompatibleClient(LLMClient):
         )
         return (resp.choices[0].message.content or "")
 
+    async def achat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+        timeout: float = 30.0,
+    ) -> str:
+        """True async chat completion via ``httpx.AsyncClient``.
+
+        Bypasses the openai SDK's blocking transport. The transport is
+        lazy: a single ``httpx.AsyncClient`` is constructed on first
+        call and reused for the lifetime of this LLM client instance.
+        """
+        import httpx  # local import — httpx is a soft dep for async paths
+
+        body = {
+            "model": self._model,
+            "messages": list(messages),
+            "max_tokens": int(max_tokens),
+            "temperature": float(temperature),
+        }
+        # Lazy transport: build once, reuse. LLM client lifetime is
+        # typically the whole program, so a per-instance client is fine.
+        client = getattr(self, "_async_client", None)
+        if client is None:
+            client = httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=float(timeout) if timeout else self._timeout,
+                headers={"Authorization": f"Bearer {self._api_key}"},
+            )
+            self._async_client = client
+        try:
+            resp = await client.post("/chat/completions", json=body)
+            resp.raise_for_status()
+            data = resp.json()
+        except httpx.HTTPError as exc:
+            logger.warning("AsyncLLM HTTP call failed: %s", exc)
+            raise
+        # OpenAI-shaped response: choices[0].message.content
+        choices = data.get("choices") or []
+        if not choices:
+            return ""
+        return choices[0].get("message", {}).get("content") or ""
+
+    async def aclose(self) -> None:
+        """Close the lazy httpx.AsyncClient. Call before shutdown to
+        avoid 'Unclosed client' warnings.
+        """
+        client = getattr(self, "_async_client", None)
+        if client is not None:
+            await client.aclose()
+            self._async_client = None
+
 
 class NullLLMClient(LLMClient):
     """Always raises. Sentinel for tests and forced fallback."""
 
     def chat(self, messages, **kwargs):  # noqa: ARG002
+        raise RuntimeError("NullLLMClient cannot serve requests")
+
+    async def achat(self, messages, **kwargs):  # noqa: ARG002
         raise RuntimeError("NullLLMClient cannot serve requests")
 
 
@@ -178,6 +264,40 @@ class CachedLLMClient(LLMClient):
             with self._lock:
                 if len(self._cache) >= self._max:
                     # Drop oldest (insertion-ordered dict semantics in py3.7+)
+                    self._cache.pop(next(iter(self._cache)))
+                self._cache[key] = encoded
+        return result
+
+    async def achat(self, messages, **kwargs):
+        """Async variant. Mirrors chat() but delegates to inner.achat
+        when the inner client has a true async path, so the executor
+        hop is avoided. Cache lookup/store uses the same in-process
+        dict or external backend as the sync path.
+        """
+        key_payload = repr(messages) + "|" + repr(sorted(kwargs.items()))
+        key = hashlib.sha256(key_payload.encode("utf-8")).hexdigest()
+        now = self._clock()
+        # Cache lookup
+        if self._external:
+            cached = self._decode(self._cache_get(key), now)
+        else:
+            with self._lock:
+                raw = self._cache.get(key)
+            cached = self._decode(raw, now)
+        if cached is not None:
+            return cached
+        # Inner call — use true async path if available, else hop the
+        # executor (the default LLMClient.achat does this for us).
+        if hasattr(self._inner, "achat"):
+            result = await self._inner.achat(messages, **kwargs)
+        else:
+            result = await asyncio.to_thread(self._inner.chat, messages, **kwargs)
+        encoded = self._encode(result, now)
+        if self._external:
+            self._cache_put(key, encoded)
+        else:
+            with self._lock:
+                if len(self._cache) >= self._max:
                     self._cache.pop(next(iter(self._cache)))
                 self._cache[key] = encoded
         return result
