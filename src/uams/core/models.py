@@ -7,7 +7,7 @@ import json
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 from uams.core.enums import MemoryType, EventType, PrivacyLevel
 
@@ -15,7 +15,7 @@ from uams.core.enums import MemoryType, EventType, PrivacyLevel
 class MemoryId:
     """Globally unique memory identifier."""
 
-    def __init__(self, id_str: Optional[str] = None):
+    def __init__(self, id_str: str | None = None):
         self.id: str = id_str or str(uuid.uuid4())
 
     def __str__(self) -> str:
@@ -38,9 +38,9 @@ class TemporalAnchor:
     """Temporal metadata for a memory: creation, access, consolidation, expiry."""
 
     created_at: float = field(default_factory=time.time)
-    accessed_at: Optional[float] = None
-    consolidated_at: Optional[float] = None
-    expires_at: Optional[float] = None
+    accessed_at: float | None = None
+    consolidated_at: float | None = None
+    expires_at: float | None = None
 
     def age_seconds(self) -> float:
         return time.time() - self.created_at
@@ -61,10 +61,10 @@ class AgentContext:
     agent_id: str
     agent_type: str          # e.g. "personal_assistant", "game_npc", "researcher"
     session_id: str
-    user_id: Optional[str] = None
-    team_id: Optional[str] = None
-    project_id: Optional[str] = None
-    tenant_id: Optional[str] = None  # NEW: multi-tenant isolation boundary (cloud)
+    user_id: str | None = None
+    team_id: str | None = None
+    project_id: str | None = None
+    tenant_id: str | None = None  # NEW: multi-tenant isolation boundary (cloud)
 
     def namespace(self) -> str:
         """Return a unique namespace for this memory owner."""
@@ -87,8 +87,8 @@ class MemoryPayload:
     """The actual content of a memory - completely domain-agnostic."""
 
     raw: str                          # Original raw observation
-    structured: Optional[Dict[str, Any]] = None  # Extracted facts/entities
-    embedding: Optional[List[float]] = None      # Dense vector representation
+    structured: dict[str, Any] | None = None  # Extracted facts/entities
+    embedding: list[float] | None = None      # Dense vector representation
 
     def fingerprint(self) -> str:
         """SHA-256 deduplication key."""
@@ -110,11 +110,11 @@ class MemoryMetadata:
     privacy: PrivacyLevel
     importance: float = 5.0          # 1-10, user or LLM assigned
     confidence: float = 1.0            # 0-1, certainty that this is true
-    source_event: Optional[EventType] = None
-    tags: Set[str] = field(default_factory=set)
-    categories: Set[str] = field(default_factory=set)
-    relations: List[Relation] = field(default_factory=list)
-    provenance: List[str] = field(default_factory=list)  # Chain of derivation IDs
+    source_event: EventType | None = None
+    tags: set[str] = field(default_factory=set)
+    categories: set[str] = field(default_factory=set)
+    relations: list[Relation] = field(default_factory=list)
+    provenance: list[str] = field(default_factory=list)  # Chain of derivation IDs
 
     def add_tag(self, tag: str) -> None:
         self.tags.add(tag)
@@ -149,7 +149,7 @@ class Memory:
         self.anchor.touch()
         self.last_access_count += 1
 
-    def to_json(self) -> Dict[str, Any]:
+    def to_json(self) -> dict[str, Any]:
         """Serialize to JSON-compatible dict.
 
         Includes ``embedding`` (payload) and ``relations`` (metadata) so
@@ -207,7 +207,7 @@ class Memory:
         }
 
     @classmethod
-    def from_json(cls, data: Dict[str, Any]) -> Memory:
+    def from_json(cls, data: dict[str, Any]) -> Memory:
         """Deserialize from JSON-compatible dict.
 
         Reads ``embedding`` (payload) and ``relations`` (metadata) so the
@@ -275,13 +275,13 @@ class AgentEvent:
 
     # What
     content: str = ""                          # Natural language description
-    structured_data: Optional[Dict[str, Any]] = None  # JSON-serializable artifacts
-    attachments: List[Dict[str, Any]] = field(default_factory=list)  # Images, audio, files
+    structured_data: dict[str, Any] | None = None  # JSON-serializable artifacts
+    attachments: list[dict[str, Any]] = field(default_factory=list)  # Images, audio, files
 
     # Why / Context
-    intent: Optional[str] = None             # Agent's goal at this moment
-    plan_id: Optional[str] = None            # Which plan this belongs to
-    parent_event_id: Optional[str] = None   # Causal chain
+    intent: str | None = None             # Agent's goal at this moment
+    plan_id: str | None = None            # Which plan this belongs to
+    parent_event_id: str | None = None   # Causal chain
 
     # Privacy
     privacy: PrivacyLevel = PrivacyLevel.PUBLIC

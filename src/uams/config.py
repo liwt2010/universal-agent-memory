@@ -14,8 +14,10 @@ Production-Safety:
   ``privacy_patterns`` here is an *override* channel, not the default.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Literal
 import os
 
 
@@ -67,7 +69,7 @@ class UAMSConfig:
     #
     # When a memory has multiple categories, the FIRST matching key
     # wins (preserves a deterministic, non-additive behavior).
-    category_half_life_overrides: Optional[Dict[str, Optional[float]]] = None
+    category_half_life_overrides: dict[str, float | None] = None
 
     # --- Deduplication ---
     dedup_window_seconds: float = 300.0
@@ -90,7 +92,7 @@ class UAMSConfig:
     default_token_budget: int = 2000
 
     # --- Privacy ---
-    privacy_patterns: Optional[List[Tuple[str, str]]] = None  # Override PrivacyFilter.DEFAULT_PATTERNS if set
+    privacy_patterns: list[tuple[str, str]] | None = None  # Override PrivacyFilter.DEFAULT_PATTERNS if set
     default_privacy_level: str = "internal"  # PUBLIC | INTERNAL | PRIVATE | SECRET
     privacy_redaction_enabled: bool = True
 
@@ -121,9 +123,9 @@ class UAMSConfig:
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 0
-    redis_password: Optional[str] = None
+    redis_password: str | None = None
     redis_key_prefix: str = "uams:memory:"
-    redis_ttl_seconds: Optional[float] = None
+    redis_ttl_seconds: float | None = None
     redis_enable_pubsub: bool = False
     redis_pool_max_connections: int = 50
 
@@ -132,7 +134,7 @@ class UAMSConfig:
     neo4j_user: str = "neo4j"
     neo4j_password: str = "password"
     neo4j_database: str = "neo4j"
-    neo4j_ttl_seconds: Optional[float] = None
+    neo4j_ttl_seconds: float | None = None
 
     # --- PostgreSQL ---
     postgresql_host: str = "localhost"
@@ -156,8 +158,8 @@ class UAMSConfig:
     redis_cache_host: str = "localhost"
     redis_cache_port: int = 6379
     redis_cache_db: int = 0
-    redis_cache_password: Optional[str] = None
-    redis_cache_ttl_seconds: Optional[float] = None  # None = no expiry
+    redis_cache_password: str | None = None
+    redis_cache_ttl_seconds: float | None = None  # None = no expiry
     redis_cache_key_prefix: str = "uams:cache:"
     # --- Query Rewriting (optional, opt-in) ---
     query_rewrite_enabled: bool = False
@@ -169,7 +171,7 @@ class UAMSConfig:
     # (so query rewriting shares the same OpenAI/MiniMax config as compression)
     embedding_model: str = "all-MiniLM-L6-v2"  # local default
     embedding_remote_model: str = "text-embedding-3-small"
-    embedding_api_key: Optional[str] = None
+    embedding_api_key: str | None = None
     embedding_base_url: str = "https://api.openai.com/v1"
     embedding_dimension: int = 384  # all-MiniLM-L6-v2 default; set explicitly when changing provider
     embedding_timeout_seconds: float = 10.0
@@ -177,12 +179,12 @@ class UAMSConfig:
     embedding_batch_size: int = 32
     embedding_cache_enabled: bool = True
     embedding_cache_max_entries: int = 5000
-    embedding_device: Optional[str] = None  # "cuda" / "cpu" / None for auto
+    embedding_device: str | None = None  # "cuda" / "cpu" / None for auto
 
     # --- LLM Compression (optional) ---
     llm_enabled: bool = False
     llm_provider: str = "openai_compatible"  # "openai_compatible" | "null"
-    llm_api_key: Optional[str] = None
+    llm_api_key: str | None = None
     llm_base_url: str = "https://api.openai.com/v1"
     llm_model: str = "gpt-4o-mini"
     llm_timeout_seconds: float = 30.0
@@ -203,7 +205,7 @@ class UAMSConfig:
     # with deployment scripts that reference them, but no code in
     # src/ reads them. A future release may wire them to a writer.
     enable_audit_log: bool = False
-    audit_log_path: Optional[str] = None
+    audit_log_path: str | None = None
     enable_metrics: bool = True
 
     # --- Identity Field Limits ---
@@ -253,7 +255,7 @@ class UAMSConfig:
             raise ValueError(f"{key} must be a float, got {raw!r}") from exc
 
     @staticmethod
-    def _env_optional_float(key: str) -> Optional[float]:
+    def _env_optional_float(key: str) -> float | None:
         raw = os.getenv(key)
         if raw is None or raw == "" or raw == "0":
             return None
@@ -388,7 +390,7 @@ class UAMSConfig:
         - ``production``: structural checks + ERROR on insecure defaults
           (raises ValueError, refusing to start).
         """
-        errors: List[str] = []
+        errors: list[str] = []
 
         # --- Environment ---
         if self.environment not in ("development", "staging", "production"):
@@ -636,12 +638,12 @@ class UAMSConfig:
     # Production-safety helpers
     # ------------------------------------------------------------------
 
-    def _check_insecure_defaults(self) -> List[str]:
+    def _check_insecure_defaults(self) -> list[str]:
         """Return list of error strings for insecure defaults.
 
         Called only when environment is staging or production.
         """
-        errors: List[str] = []
+        errors: list[str] = []
 
         if self.storage_backend == "neo4j":
             if self.neo4j_password in INSECURE_DEFAULT_CREDENTIALS["neo4j_password"]:

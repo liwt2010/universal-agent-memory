@@ -5,8 +5,10 @@ so that the rest of ``uams`` does not require it. Install with
 ``pip install 'universal-agent-memory[llm]'`` to enable.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable
 import hashlib
 import logging
 import threading
@@ -21,7 +23,7 @@ class LLMClient(ABC):
     @abstractmethod
     def chat(
         self,
-        messages: List[Dict[str, str]],
+        messages: list[dict[str, str]],
         *,
         max_tokens: int = 1024,
         temperature: float = 0.0,
@@ -111,9 +113,9 @@ class CachedLLMClient(LLMClient):
         self,
         inner: LLMClient,
         max_entries: int = 1000,
-        cache_get: Optional[Callable[[str], Optional[str]]] = None,
-        cache_put: Optional[Callable[[str, str], None]] = None,
-        ttl_seconds: Optional[float] = None,
+        cache_get: Callable[[str], str | None] = None,
+        cache_put: Callable[[str, str], None] | None = None,
+        ttl_seconds: float | None = None,
         clock: Callable[[], float] = time.monotonic,
     ):
         self._inner = inner
@@ -125,7 +127,7 @@ class CachedLLMClient(LLMClient):
             self._cache_put = cache_put
         else:
             self._max = max(1, int(max_entries))
-            self._cache: Dict[str, str] = {}
+            self._cache: dict[str, str] = {}
             self._lock = threading.RLock()
 
     def _encode(self, value: str, now: float) -> str:
@@ -135,7 +137,7 @@ class CachedLLMClient(LLMClient):
             return value
         return f"{value}|{now + self._ttl:.6f}"
 
-    def _decode(self, raw: Optional[str], now: float) -> Optional[str]:
+    def _decode(self, raw: str | None, now: float) -> str | None:
         if raw is None:
             return None
         if self._ttl is None:

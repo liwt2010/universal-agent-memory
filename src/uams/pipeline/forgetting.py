@@ -7,9 +7,10 @@ in that category (e.g. "birthday" never decays, "short_term_preference"
 decays in days).
 """
 
+from __future__ import annotations
+
 import math
 from datetime import timedelta
-from typing import Dict, Optional
 
 from uams.core.enums import MemoryType
 from uams.core.models import Memory
@@ -38,7 +39,7 @@ class ForgettingEngine:
     """
 
     # (half-life, minimum retention before forgetting)
-    DEFAULT_DECAY_CURVES: Dict[MemoryType, tuple] = {
+    DEFAULT_DECAY_CURVES: dict[MemoryType, tuple] = {
         MemoryType.WORKING:    (timedelta(minutes=30), 0.10),
         MemoryType.EPISODIC:   (timedelta(days=7),     0.50),
         MemoryType.SEMANTIC:   (timedelta(days=90),    0.90),
@@ -47,9 +48,9 @@ class ForgettingEngine:
 
     def __init__(
         self,
-        stores: Dict[MemoryType, MemoryStore],
-        decay_curves: Dict[MemoryType, tuple] = None,
-        category_overrides: Optional[Dict[str, Optional[float]]] = None,
+        stores: dict[MemoryType, MemoryStore],
+        decay_curves: dict[MemoryType, tuple] = None,
+        category_overrides: dict[str, float | None] = None,
     ):
         """
         :param stores: tier -> MemoryStore

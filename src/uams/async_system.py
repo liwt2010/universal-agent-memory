@@ -32,7 +32,6 @@ their store backend to a native async driver.
 from __future__ import annotations
 
 import asyncio
-from typing import Dict, List, Optional, Union
 
 from uams.system import UniversalMemorySystem
 from uams.core.models import AgentContext, AgentEvent, Memory, MemoryId
@@ -77,8 +76,8 @@ class AsyncUniversalMemorySystem:
         importance: float = 5.0,
         category: str = "general",
         privacy=None,
-        tags: Optional[set] = None,
-    ) -> Optional[MemoryId]:
+        tags: set | None = None,
+    ) -> MemoryId | None:
         from uams.core.enums import PrivacyLevel
         privacy = privacy or PrivacyLevel.PUBLIC
         async with self._store_lock:
@@ -91,7 +90,7 @@ class AsyncUniversalMemorySystem:
         query: str,
         context: AgentContext,
         budget_tokens: int = None,
-    ) -> List[Memory]:
+    ) -> list[Memory]:
         async with self._store_lock:
             return await asyncio.to_thread(
                 self._ums.recall, query, context, budget_tokens
@@ -101,9 +100,9 @@ class AsyncUniversalMemorySystem:
         self,
         memory_id: str,
         *,
-        cascade: Union[CascadeStrategy, str] = CascadeStrategy.BIDIRECTIONAL,
-        max_depth: Optional[int] = None,
-        in_edge_mode: Optional[str] = None,
+        cascade: CascadeStrategy | str = CascadeStrategy.BIDIRECTIONAL,
+        max_depth: int | None = None,
+        in_edge_mode: str | None = None,
     ) -> CascadeReport:
         """Forget a memory with configurable cascade.
 
@@ -155,11 +154,11 @@ class AsyncUniversalMemorySystem:
         async with self._coord_lock:
             await asyncio.to_thread(self._ums.send_signal, signal)
 
-    async def read_signals(self, agent_id: str) -> List[Signal]:
+    async def read_signals(self, agent_id: str) -> list[Signal]:
         async with self._coord_lock:
             return await asyncio.to_thread(self._ums.read_signals, agent_id)
 
-    async def get_stats(self) -> Dict[str, int]:
+    async def get_stats(self) -> dict[str, int]:
         async with self._store_lock:
             return await asyncio.to_thread(self._ums.get_stats)
 

@@ -4,10 +4,11 @@ Provides /health and /ready endpoints for Kubernetes/Compose.
 Exposes Prometheus-compatible metrics on /metrics.
 """
 
+from __future__ import annotations
+
 import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from typing import Dict, Optional
 
 from uams.utils.logging import get_logger
 
@@ -18,9 +19,9 @@ class MetricsCollector:
     """Thread-safe metrics collector with ring buffer to prevent memory leaks."""
 
     def __init__(self, max_histogram_entries: int = 10000):
-        self._counters: Dict[str, int] = {}
-        self._histograms: Dict[str, list] = {}
-        self._histogram_stats: Dict[str, Dict] = {}  # aggregated stats after ring buffer overflow
+        self._counters: dict[str, int] = {}
+        self._histograms: dict[str, list] = {}
+        self._histogram_stats: dict[str, dict] = {}  # aggregated stats after ring buffer overflow
         self._max_histogram_entries = max_histogram_entries
         self._lock = threading.Lock()
 
@@ -128,7 +129,7 @@ class HealthServer:
     def __init__(
         self,
         port: int = 3111,
-        metrics: Optional[MetricsCollector] = None,
+        metrics: MetricsCollector | None = None,
         histogram_max_entries: int = 10000,
     ):
         self._port = port
@@ -139,8 +140,8 @@ class HealthServer:
         self._metrics = metrics or MetricsCollector(
             max_histogram_entries=histogram_max_entries,
         )
-        self._server: Optional[HTTPServer] = None
-        self._thread: Optional[threading.Thread] = None
+        self._server: HTTPServer | None = None
+        self._thread: threading.Thread | None = None
 
     @property
     def metrics(self) -> MetricsCollector:

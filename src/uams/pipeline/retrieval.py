@@ -1,8 +1,10 @@
 """Retrieval pipeline: hybrid search with RRF fusion and token budget compression."""
 
+from __future__ import annotations
+
 import math
 from collections import defaultdict
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from uams.core.enums import MemoryType
 from uams.core.models import AgentContext, Memory
@@ -28,10 +30,10 @@ class RetrievalPipeline:
 
     def __init__(
         self,
-        stores: Dict[MemoryType, MemoryStore],
+        stores: dict[MemoryType, MemoryStore],
         rrf_k: int = 60,
-        token_estimator: Optional[Any] = None,
-        query_rewriter: Optional[QueryRewriter] = None,
+        token_estimator: Any | None = None,
+        query_rewriter: QueryRewriter | None = None,
     ):
         self._stores = stores
         self._rrf_k = rrf_k
@@ -42,10 +44,10 @@ class RetrievalPipeline:
         self,
         query: str,
         context: AgentContext,
-        vector: Optional[List[float]] = None,
+        vector: list[float] | None = None,
         budget_tokens: int = 2000,
-        filters: Optional[Dict[str, Any]] = None,
-    ) -> List[Memory]:
+        filters: dict[str, Any] | None = None,
+    ) -> list[Memory]:
         """
         Universal retrieval pipeline.
 
@@ -58,7 +60,7 @@ class RetrievalPipeline:
         6. Session diversification (max 3 per session)
         7. Token budget compression (greedy by importance)
         """
-        all_results: Dict[str, List[tuple]] = defaultdict(list)
+        all_results: dict[str, list[tuple]] = defaultdict(list)
 
         # Optional: expand query into variants for higher recall.
         # If disabled or no rewriter is configured, variants == [query].
@@ -93,8 +95,8 @@ class RetrievalPipeline:
                         all_results[str(mem.id)].append((mem, rank, "graph"))
 
         # 5. RRF fusion + boosting
-        rrf_scores: Dict[str, float] = defaultdict(float)
-        memory_map: Dict[str, Memory] = {}
+        rrf_scores: dict[str, float] = defaultdict(float)
+        memory_map: dict[str, Memory] = {}
 
         for mid, rankings in all_results.items():
             mem = rankings[0][0]
@@ -108,8 +110,8 @@ class RetrievalPipeline:
 
         # 6. Diversify: max 3 per session to avoid collapse
         sorted_ids = sorted(rrf_scores.keys(), key=lambda x: rrf_scores[x], reverse=True)
-        final: List[Memory] = []
-        session_counts: Dict[str, int] = defaultdict(int)
+        final: list[Memory] = []
+        session_counts: dict[str, int] = defaultdict(int)
 
         for mid in sorted_ids:
             mem = memory_map[mid]
@@ -124,7 +126,7 @@ class RetrievalPipeline:
         # 7. Token budget compression (greedy by importance)
         return self._compress_to_budget(final, budget_tokens)
 
-    def _expand_queries(self, query: str) -> List[str]:
+    def _expand_queries(self, query: str) -> list[str]:
         """Return query variants via the configured ``QueryRewriter``.
 
         Always returns at least ``[query]`` (the original). If no rewriter
@@ -139,7 +141,7 @@ class RetrievalPipeline:
             return [query]
         return variants if variants else [query]
 
-    def _compress_to_budget(self, memories: List[Memory], budget: int) -> List[Memory]:
+    def _compress_to_budget(self, memories: list[Memory], budget: int) -> list[Memory]:
         """Greedy packing by relevance density (score / tokens), respecting budget.
 
         Each memory is scored by ``score / tokens``, where ``score`` is the
@@ -169,7 +171,7 @@ class RetrievalPipeline:
         # Sort by density descending — high-score short memories first
         enriched.sort(key=lambda x: x[0], reverse=True)
 
-        result: List[Memory] = []
+        result: list[Memory] = []
         used = 0
         for _density, tokens, mem in enriched:
             if used + tokens > budget:

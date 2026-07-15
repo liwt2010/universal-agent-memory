@@ -23,7 +23,7 @@ classes' public API are required.
 from __future__ import annotations
 
 import logging
-from typing import Callable, Optional
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +57,8 @@ class RedisCacheBackend:
         host: str = "localhost",
         port: int = 6379,
         db: int = 0,
-        password: Optional[str] = None,
-        ttl_seconds: Optional[float] = None,
+        password: str | None = None,
+        ttl_seconds: float | None = None,
         key_prefix: str = "uams:cache:",
         socket_timeout_seconds: float = 1.0,
     ):
@@ -101,7 +101,7 @@ class RedisCacheBackend:
     # Public API
     # ------------------------------------------------------------------
 
-    def get(self, key: str) -> Optional[str]:
+    def get(self, key: str) -> str | None:
         """Fetch a value by key. Returns ``None`` on miss or any Redis error."""
         if not self._connected:
             return None
@@ -127,7 +127,7 @@ class RedisCacheBackend:
     def is_connected(self) -> bool:
         return self._connected
 
-    def cache_get_callable(self) -> Callable[[str], Optional[str]]:
+    def cache_get_callable(self) -> Callable[[str], str | None]:
         """Return a ``cache_get``-compatible function for ``CachedLLMClient`` etc."""
         return self.get
 

@@ -19,7 +19,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import threading
-from typing import List, Optional
 
 from uams.llm.client import LLMClient, NullLLMClient
 
@@ -54,7 +53,7 @@ class QueryRewriter:
 
     def __init__(
         self,
-        llm_client: Optional[LLMClient] = None,
+        llm_client: LLMClient | None = None,
         max_variants: int = 4,
         timeout: float = 5.0,
         cache_max_entries: int = 1000,
@@ -70,7 +69,7 @@ class QueryRewriter:
     # Public API
     # ------------------------------------------------------------------
 
-    def rewrite(self, query: str) -> List[str]:
+    def rewrite(self, query: str) -> list[str]:
         """Return a list of query variants including the original.
 
         On any error, returns ``[query]`` so the main pipeline never stalls.
@@ -109,7 +108,7 @@ class QueryRewriter:
     # Internal
     # ------------------------------------------------------------------
 
-    def _rewrite_uncached(self, query: str) -> List[str]:
+    def _rewrite_uncached(self, query: str) -> list[str]:
         """Call the LLM and parse the response. Returns parsed variants
         without the original query (caller adds it).
         """
@@ -130,7 +129,7 @@ class QueryRewriter:
         return self._parse_variants(raw)
 
     @staticmethod
-    def _parse_variants(text: str) -> List[str]:
+    def _parse_variants(text: str) -> list[str]:
         """Parse the LLM response into a list of variant strings.
 
         Tolerant of:
@@ -139,7 +138,7 @@ class QueryRewriter:
         - surrounding whitespace
         - bullet points
         """
-        variants: List[str] = []
+        variants: list[str] = []
         for raw_line in text.splitlines():
             line = raw_line.strip()
             if not line:
@@ -172,12 +171,12 @@ class QueryRewriter:
         payload = f"{self._llm.__class__.__name__}|{query}"
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
-    def _cache_get(self, query: str) -> Optional[List[str]]:
+    def _cache_get(self, query: str) -> list[str] | None:
         key = self._cache_key(query)
         with self._lock:
             return self._cache.get(key)
 
-    def _cache_put(self, query: str, variants: List[str]) -> None:
+    def _cache_put(self, query: str, variants: list[str]) -> None:
         key = self._cache_key(query)
         with self._lock:
             if len(self._cache) >= self._cache_max:

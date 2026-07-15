@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from typing import Iterable, List, Set
+from typing import Iterable
 
 from uams.core.enums import EventType
 from uams.core.models import AgentEvent
@@ -30,7 +30,7 @@ from uams.core.models import AgentEvent
 
 # Conservative English stop-word set. Keeps the implementation small
 # without pulling in NLTK. Add domain-specific stop words as needed.
-_STOP_WORDS: Set[str] = frozenset(
+_STOP_WORDS: frozenset[str] = frozenset(
     {
         "a", "an", "the", "and", "or", "but", "is", "are", "was", "were",
         "be", "been", "being", "have", "has", "had", "do", "does", "did",
@@ -65,7 +65,7 @@ class HierarchicalFilter:
     # L1: structural filter
     # ------------------------------------------------------------------
 
-    def filter_events(self, events: List[AgentEvent]) -> List[AgentEvent]:
+    def filter_events(self, events: list[AgentEvent]) -> list[AgentEvent]:
         """Return a deduplicated, low-quality-filtered subset of events.
 
         Preserves original order. If no events survive, returns the
@@ -74,8 +74,8 @@ class HierarchicalFilter:
         if not events:
             return events
 
-        out: List[AgentEvent] = []
-        seen_contents: Set[str] = set()
+        out: list[AgentEvent] = []
+        seen_contents: set[str] = set()
         for ev in events:
             content = (ev.content or "").strip()
             # Rule 1: too short
@@ -102,7 +102,7 @@ class HierarchicalFilter:
     # L2: keyword extraction
     # ------------------------------------------------------------------
 
-    def extract_keywords(self, events: Iterable[AgentEvent]) -> List[str]:
+    def extract_keywords(self, events: Iterable[AgentEvent]) -> list[str]:
         """Return the top-K most-frequent non-stopword tokens from the events."""
         if self._top_k == 0:
             return []
@@ -124,8 +124,8 @@ class HierarchicalFilter:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _tokenize(self, text: str) -> List[str]:
-        out: List[str] = []
+    def _tokenize(self, text: str) -> list[str]:
+        out: list[str] = []
         for m in _TOKEN_RE.finditer(text):
             tok = m.group(0).lower()
             if tok in _STOP_WORDS:

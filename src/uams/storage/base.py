@@ -1,7 +1,9 @@
 """Abstract base class for memory stores."""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Any, List, Optional
+from typing import Any
 
 from uams.core.models import Memory
 
@@ -25,7 +27,7 @@ class MemoryStore(ABC):
         ...
 
     @abstractmethod
-    def retrieve(self, memory_id: str) -> Optional[Memory]:
+    def retrieve(self, memory_id: str) -> Memory | None:
         """Retrieve a memory by its ID."""
         ...
 
@@ -35,24 +37,24 @@ class MemoryStore(ABC):
         ...
 
     @abstractmethod
-    def search_keywords(self, query: str, k: int = 10) -> List[Memory]:
+    def search_keywords(self, query: str, k: int = 10) -> list[Memory]:
         """Keyword-based search (BM25 or simple token matching)."""
         ...
 
     @abstractmethod
     def search_vector(
-        self, vector: List[float], k: int = 10, **filters: Any
-    ) -> List[Memory]:
+        self, vector: list[float], k: int = 10, **filters: Any
+    ) -> list[Memory]:
         """Vector similarity search (cosine or otherwise)."""
         ...
 
     @abstractmethod
-    def search_graph(self, entity: str, depth: int = 2) -> List[Memory]:
+    def search_graph(self, entity: str, depth: int = 2) -> list[Memory]:
         """Graph traversal starting from an entity or memory ID."""
         ...
 
     @abstractmethod
-    def list_all(self, limit: int = 100) -> List[Memory]:
+    def list_all(self, limit: int = 100) -> list[Memory]:
         """List all memories (for debugging / admin)."""
         ...
 

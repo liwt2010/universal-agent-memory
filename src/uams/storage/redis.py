@@ -4,11 +4,13 @@ Optional dependency: requires `pip install redis`.
 Provides distributed cache, pub/sub signals, and TTL-based expiry.
 """
 
+from __future__ import annotations
+
 import json
 import random
 import re
 import threading
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 from uams.storage.base import MemoryStore
 from uams.core.models import (
@@ -28,7 +30,7 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _MIN_TOKEN_LEN = 2
 
 
-def _tokenize(text: str) -> Set[str]:
+def _tokenize(text: str) -> set[str]:
     if not text:
         return set()
     return {t for t in _TOKEN_RE.findall(text.lower()) if len(t) >= _MIN_TOKEN_LEN}
@@ -50,10 +52,10 @@ class RedisStore(MemoryStore):
         host: str = "localhost",
         port: int = 6379,
         db: int = 0,
-        password: Optional[str] = None,
+        password: str | None = None,
         key_prefix: str = "uams:memory:",
         expiry_zset_key: str = "uams:expiry",
-        ttl_seconds: Optional[float] = None,
+        ttl_seconds: float | None = None,
         enable_pubsub: bool = False,
         pool_max_connections: int = 50,
     ):
@@ -154,7 +156,7 @@ class RedisStore(MemoryStore):
         """Key for the per-memory SET that stores its tokens (used for delete cleanup)."""
         return f"{self._key_prefix}idx:mem:{memory_id}:tokens"
 
-    def _memory_to_dict(self, memory: Memory) -> Dict[str, Any]:
+    def _memory_to_dict(self, memory: Memory) -> dict[str, Any]:
         """Serialize memory to Redis-compatible dict."""
         return {
             b"id": str(memory.id).encode("utf-8"),
@@ -184,7 +186,7 @@ class RedisStore(MemoryStore):
             b"project_id": (memory.context.project_id or "").encode("utf-8"),
         }
 
-    def _dict_to_memory(self, data: Dict[bytes, bytes]) -> Optional[Memory]:
+    def _dict_to_memory(self, data: dict[bytes, bytes]) -> Memory | None:
         """Deserialize memory from Redis dict."""
         try:
             def get_str(key: bytes) -> str:
@@ -300,7 +302,7 @@ class RedisStore(MemoryStore):
             self._mark_unavailable(exc)
             logger.exception("Redis store failed for memory %s", memory.id)
 
-    def retrieve(self, memory_id: str) -> Optional[Memory]:
+    def retrieve(self, memory_id: str) -> Memory | None:
         """Read a memory and update accessed_at atomically.
 
         Uses a Lua script (EVAL) so the HGETALL and the touched-time
@@ -383,7 +385,7 @@ class RedisStore(MemoryStore):
             logger.exception("Redis delete failed for %s", memory_id)
             return False
 
-    def search_keywords(self, query: str, k: int = 10) -> List[Memory]:
+    def search_keywords(self, query: str, k: int = 10) -> list[Memory]:
         """Full-text-ish search backed by an inverted index.
 
         Strategy: tokenize the query, look up the candidate memory IDs from
@@ -404,7 +406,7 @@ class RedisStore(MemoryStore):
             if not tokens:
                 return []
             # Candidate memory IDs: union across all query tokens.
-            candidates: Set[str] = set()
+            candidates: set[str] = set()
             for t in tokens:
                 for mid in self._client.smembers(self._term_index_key(t)) or set():
                     candidates.add(
@@ -433,7 +435,7 @@ class RedisStore(MemoryStore):
             # "vege" still finds "vegetarian" as a substring.)
             query_lower = query.lower()
             query_terms = query_lower.split()
-            results: List[Memory] = []
+            results: list[Memory] = []
             for data in all_data:
                 if not data:
                     continue
@@ -451,12 +453,12 @@ class RedisStore(MemoryStore):
             return []
 
     def search_vector(
-        self, vector: List[float], k: int = 10, **filters: Any
-    ) -> List[Memory]:
+        self, vector: list[float], k: int = 10, **filters: Any
+    ) -> list[Memory]:
         """Redis does not support vector search natively. Fallback to recency."""
         return self._recent_memories(k)
 
-    def search_graph(self, entity: str, depth: int = 2) -> List[Memory]:
+    def search_graph(self, entity: str, depth: int = 2) -> list[Memory]:
         """Redis graph search: load all and filter by relation matching."""
         if not self._available or not self._client:
             return []
@@ -495,10 +497,10 @@ class RedisStore(MemoryStore):
             logger.exception("Redis graph search failed")
             return []
 
-    def list_all(self, limit: int = 100) -> List[Memory]:
+    def list_all(self, limit: int = 100) -> list[Memory]:
         return self._recent_memories(limit)
 
-    def _recent_memories(self, limit: int) -> List[Memory]:
+    def _recent_memories(self, limit: int) -> list[Memory]:
         """Return most recent memories by created_at."""
         if not self._available or not self._client:
             return []
@@ -608,7 +610,7 @@ class RedisStore(MemoryStore):
             deleted = 0
             cursor = 0
             pattern = f"{self._key_prefix}*"
-            to_delete: List[str] = []
+            to_delete: list[str] = []
             while True:
                 cursor, keys = self._client.scan(
                     cursor=cursor, match=pattern, count=200,
@@ -643,7 +645,7 @@ class RedisStore(MemoryStore):
 
     # --- Pub/Sub Signal Support ---
 
-    def publish_signal(self, channel: str, signal: Dict[str, Any]) -> bool:
+    def publish_signal(self, channel: str, signal: dict[str, Any]) -> bool:
         """Publish an inter-agent signal via Redis Pub/Sub."""
         if not self._available or not self._client or not self._enable_pubsub:
             return False
@@ -657,7 +659,7 @@ class RedisStore(MemoryStore):
             logger.exception("Redis publish_signal failed")
             return False
 
-    def subscribe_signals(self, channel: str, handler=None) -> Optional[Any]:
+    def subscribe_signals(self, channel: str, handler=None) -> Any | None:
         """Subscribe to a signal channel. Returns pubsub object for listening."""
         if not self._available or not self._client or not self._enable_pubsub:
             return None

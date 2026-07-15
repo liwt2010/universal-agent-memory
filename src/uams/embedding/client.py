@@ -9,7 +9,7 @@ UAMS ships with three concrete providers:
   endpoint (OpenAI / MiniMax / ollama / vLLM).
 
 Each provider is wrapped by ``CachedEmbeddingProvider`` which adds an
-LRU (and, optionally, a TTL 鈥?``ttl_seconds``) cache. Embedding work
+LRU (and, optionally, a TTL — ``ttl_seconds``) cache. Embedding work
 is deterministic per (provider, text), so caching is always safe.
 
 The ``openai`` package is imported lazily inside the OpenAI-compatible
@@ -17,11 +17,13 @@ provider. Install with ``pip install 'universal-agent-memory[embeddings]'``
 to enable.
 """
 
+from __future__ import annotations
+
 import json
 import hashlib
 import threading
 import time
-from typing import Callable, Iterable, List, Optional, Union
+from typing import Callable, Iterable
 
 from uams.embedding.base import EmbeddingFn, EmbeddingProvider
 
@@ -29,7 +31,7 @@ from uams.embedding.base import EmbeddingFn, EmbeddingProvider
 class NullEmbeddingProvider(EmbeddingProvider):
     """Returns an empty vector for every text. Sentinel for tests."""
 
-    def embed(self, text: str) -> List[float]:  # type: ignore[override]
+    def embed(self, text: str) -> list[float]:  # type: ignore[override]
         return []
 
 
@@ -55,7 +57,7 @@ class SentenceTransformersProvider(EmbeddingProvider):
     def dimension(self) -> int:
         return self._model.get_sentence_embedding_dimension()
 
-    def embed(self, text: str) -> List[float]:  # type: ignore[override]
+    def embed(self, text: str) -> list[float]:  # type: ignore[override]
         vec = self._model.encode([text], normalize_embeddings=True)[0]
         return [float(x) for x in vec]
 
@@ -104,7 +106,7 @@ class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
         # (callers should set ``embedding_dimension`` explicitly for caching stability)
         return 0
 
-    def embed(self, text: str) -> List[float]:  # type: ignore[override]
+    def embed(self, text: str) -> list[float]:  # type: ignore[override]
         resp = self._client.embeddings.create(model=self._model, input=[text])
         return [float(x) for x in resp.data[0].embedding]
 
@@ -131,9 +133,9 @@ class CachedEmbeddingProvider(EmbeddingProvider):
         self,
         inner: EmbeddingProvider,
         max_entries: int = 5000,
-        cache_get: Optional[Callable[[str], Optional[str]]] = None,
-        cache_put: Optional[Callable[[str, str], None]] = None,
-        ttl_seconds: Optional[float] = None,
+        cache_get: Callable[[str], str | None] = None,
+        cache_put: Callable[[str, str], None] | None = None,
+        ttl_seconds: float | None = None,
         clock: Callable[[], float] = time.monotonic,
     ):
         self._inner = inner
@@ -154,11 +156,11 @@ class CachedEmbeddingProvider(EmbeddingProvider):
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     @staticmethod
-    def _serialize(vec: List[float]) -> str:
+    def _serialize(vec: list[float]) -> str:
         return json.dumps(list(vec))
 
     @staticmethod
-    def _deserialize(raw: str) -> List[float]:
+    def _deserialize(raw: str) -> list[float]:
         try:
             return [float(x) for x in json.loads(raw)]
         except Exception:
@@ -212,7 +214,7 @@ class CachedEmbeddingProvider(EmbeddingProvider):
                     self._cache.pop(next(iter(self._cache)))
                 self._cache[key] = encoded
 
-    def embed(self, text: str) -> List[float]:  # type: ignore[override]
+    def embed(self, text: str) -> list[float]:  # type: ignore[override]
         key = self._key(text)
         hit = self._lookup(key, self._clock())
         if hit is not None:
@@ -221,15 +223,15 @@ class CachedEmbeddingProvider(EmbeddingProvider):
         self._store(key, result, self._clock())
         return result
 
-    def embed_batch(self, texts: Iterable[str]) -> List[List[float]]:  # type: ignore[override]
+    def embed_batch(self, texts: Iterable[str]) -> list[list[float]]:  # type: ignore[override]
         texts = list(texts)
         if not texts:
             return []
         keys = [self._key(t) for t in texts]
         now = self._clock()
-        misses_idx: List[int] = []
-        misses_text: List[str] = []
-        results: List[Optional[List[float]]] = [None] * len(texts)
+        misses_idx: list[int] = []
+        misses_text: list[str] = []
+        results: list[list[float] | None] = [None] * len(texts)
         for i, k in enumerate(keys):
             hit = self._lookup(k, now)
             if hit is not None:

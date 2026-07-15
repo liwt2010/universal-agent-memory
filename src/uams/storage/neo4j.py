@@ -10,8 +10,10 @@ Schema:
   (:Session {id})-[:CONTAINS]->(:Memory)
 """
 
+from __future__ import annotations
+
 import json
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 from uams.storage.base import MemoryStore
 from uams.core.models import (
@@ -35,7 +37,7 @@ class Neo4jStore(MemoryStore):
         user: str = "neo4j",
         password: str = "password",
         database: str = "neo4j",
-        ttl_seconds: Optional[float] = None,
+        ttl_seconds: float | None = None,
     ):
         self._uri = uri
         self._user = user
@@ -95,7 +97,7 @@ class Neo4jStore(MemoryStore):
         except Exception:
             logger.exception("Neo4j schema initialization failed")
 
-    def _memory_to_node_props(self, memory: Memory) -> Dict[str, Any]:
+    def _memory_to_node_props(self, memory: Memory) -> dict[str, Any]:
         """Convert memory to Neo4j node properties."""
         return {
             "id": str(memory.id),
@@ -121,7 +123,7 @@ class Neo4jStore(MemoryStore):
             "project_id": memory.context.project_id or "",
         }
 
-    def _record_to_memory(self, record: Dict) -> Optional[Memory]:
+    def _record_to_memory(self, record: dict) -> Memory | None:
         """Convert Neo4j record to Memory object."""
         try:
             node = record["m"] if "m" in record else record
@@ -252,7 +254,7 @@ class Neo4jStore(MemoryStore):
         except Exception:
             logger.exception("Neo4j store failed for memory %s", memory.id)
 
-    def retrieve(self, memory_id: str) -> Optional[Memory]:
+    def retrieve(self, memory_id: str) -> Memory | None:
         """Read a memory by id, including its outgoing RELATES edges.
 
         The OPTIONAL MATCH on ``(:Memory)-[:RELATES]->(related:Memory)``
@@ -313,7 +315,7 @@ class Neo4jStore(MemoryStore):
             logger.exception("Neo4j delete failed for %s", memory_id)
             return False
 
-    def search_keywords(self, query: str, k: int = 10) -> List[Memory]:
+    def search_keywords(self, query: str, k: int = 10) -> list[Memory]:
         """Neo4j full-text search or CONTAINS fallback."""
         if not self._available or not self._driver:
             return []
@@ -348,12 +350,12 @@ class Neo4jStore(MemoryStore):
             return []
 
     def search_vector(
-        self, vector: List[float], k: int = 10, **filters: Any
-    ) -> List[Memory]:
+        self, vector: list[float], k: int = 10, **filters: Any
+    ) -> list[Memory]:
         """Neo4j does not natively support vector search (without plugins). Fallback to recency."""
         return self._recent_memories(k)
 
-    def search_graph(self, entity: str, depth: int = 2) -> List[Memory]:
+    def search_graph(self, entity: str, depth: int = 2) -> list[Memory]:
         """
         True graph traversal using Neo4j BFS/DFS.
         Supports multi-hop relationship following.
@@ -412,10 +414,10 @@ class Neo4jStore(MemoryStore):
             logger.exception("Neo4j graph traversal failed")
             return []
 
-    def list_all(self, limit: int = 100) -> List[Memory]:
+    def list_all(self, limit: int = 100) -> list[Memory]:
         return self._recent_memories(limit)
 
-    def _recent_memories(self, limit: int) -> List[Memory]:
+    def _recent_memories(self, limit: int) -> list[Memory]:
         """Return most recent memories by created_at."""
         if not self._available or not self._driver:
             return []
@@ -508,7 +510,7 @@ class Neo4jStore(MemoryStore):
             logger.exception("Neo4j delete_by_filter(%s=%r) failed", field, value)
             return 0
 
-    def get_related_memories(self, memory_id: str, relation_type: Optional[str] = None, min_strength: float = 0.0) -> List[Memory]:
+    def get_related_memories(self, memory_id: str, relation_type: str | None = None, min_strength: float = 0.0) -> list[Memory]:
         """Get all memories directly related to a given memory."""
         if not self._available or not self._driver:
             return []

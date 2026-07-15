@@ -4,10 +4,11 @@ Improved regex patterns to reduce false positives (UUIDs, long words)
 and added common PII types (phone numbers, Chinese IDs, bearer tokens).
 """
 
+from __future__ import annotations
+
 import re
 import time
 import threading
-from typing import Dict, List, Optional
 
 from uams.core.enums import PrivacyLevel
 from uams.core.models import MemoryPayload
@@ -51,7 +52,7 @@ class PrivacyFilter:
         (r'\bgithub_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59}\b', '<GITHUB_TOKEN>'),
     ]
 
-    def __init__(self, patterns: Optional[List[tuple]] = None):
+    def __init__(self, patterns: list[tuple] | None = None):
         self._patterns = patterns or self.DEFAULT_PATTERNS
 
     def sanitize(self, text: str, level: PrivacyLevel) -> str:
@@ -87,7 +88,7 @@ class DeduplicationWindow:
 
     def __init__(self, window_seconds: float = 300.0):
         self._window = window_seconds
-        self._seen: Dict[str, float] = {}
+        self._seen: dict[str, float] = {}
         self._lock = threading.RLock()
 
     def is_duplicate(self, payload: MemoryPayload) -> bool:

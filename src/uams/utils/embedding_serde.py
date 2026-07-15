@@ -35,12 +35,11 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Optional, List
 
 logger = logging.getLogger(__name__)
 
 
-def serialize_embedding(embedding: Optional[List[float]]) -> Optional[bytes]:
+def serialize_embedding(embedding: list[float] | None) -> bytes | None:
     """Serialize an embedding vector to bytes using JSON.
 
     Returns None if embedding is None. JSON format is portable,
@@ -51,7 +50,7 @@ def serialize_embedding(embedding: Optional[List[float]]) -> Optional[bytes]:
     return json.dumps(embedding).encode("utf-8")
 
 
-def deserialize_embedding(blob: Optional[bytes]) -> Optional[List[float]]:
+def deserialize_embedding(blob: bytes | None) -> list[float] | None:
     """Deserialize embedding bytes.
 
     Accepts JSON-encoded embeddings only. Legacy pickle blobs (the byte

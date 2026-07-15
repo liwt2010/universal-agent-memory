@@ -4,10 +4,12 @@ Provides resilient operation wrappers for external service calls
 (embedding APIs, database writes, network operations).
 """
 
+from __future__ import annotations
+
 import functools
 import time
 import threading
-from typing import Any, Callable, Optional, Tuple, Type
+from typing import Any, Callable, Type
 
 from uams.utils.logging import get_logger
 
@@ -23,9 +25,9 @@ class RetryConfig:
         base_delay: float = 1.0,
         max_delay: float = 60.0,
         exponential_base: float = 2.0,
-        retryable_exceptions: Tuple[Type[Exception], ...] = (Exception,),
-        on_retry: Optional[Callable[[Exception, int, float], None]] = None,
-        on_failure: Optional[Callable[[Exception], None]] = None,
+        retryable_exceptions: tuple[type[Exception], ...] = (Exception,),
+        on_retry: Callable[[Exception, int, float], None] | None = None,
+        on_failure: Callable[[Exception], None] | None = None,
         jitter: bool = True,
     ):
         self.max_retries = max_retries
@@ -73,7 +75,7 @@ def with_retry(
     base_delay: float = 1.0,
     max_delay: float = 60.0,
     exponential_base: float = 2.0,
-    retryable_exceptions: Tuple[Type[Exception], ...] = (Exception,),
+    retryable_exceptions: tuple[type[Exception], ...] = (Exception,),
     jitter: bool = True,
 ):
     """Decorator that adds exponential backoff retry logic to any function.
@@ -103,7 +105,7 @@ def retry_call(
     func: Callable,
     config: RetryConfig,
     args: tuple = (),
-    kwargs: Optional[dict] = None,
+    kwargs: dict | None = None,
 ) -> Any:
     """Execute a function with retry logic."""
     kwargs = kwargs or {}

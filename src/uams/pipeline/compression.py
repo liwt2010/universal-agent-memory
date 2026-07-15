@@ -1,8 +1,9 @@
 """Memory compression and consolidation engines."""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from typing import List
 
 from uams.core.enums import MemoryType, PrivacyLevel, EventType
 from uams.core.models import Memory, MemoryId, TemporalAnchor, AgentEvent, MemoryPayload, MemoryMetadata
@@ -17,17 +18,17 @@ class CompressionEngine(ABC):
     """
 
     @abstractmethod
-    def compress_working_to_episodic(self, events: List[AgentEvent]) -> Memory:
+    def compress_working_to_episodic(self, events: list[AgentEvent]) -> Memory:
         """Convert raw event stream into a structured episodic memory."""
         ...
 
     @abstractmethod
-    def extract_semantic(self, episodic: Memory) -> List[Memory]:
+    def extract_semantic(self, episodic: Memory) -> list[Memory]:
         """Extract atomic facts, preferences, concepts from an episodic memory."""
         ...
 
     @abstractmethod
-    def extract_procedural(self, episodes: List[Memory]) -> List[Memory]:
+    def extract_procedural(self, episodes: list[Memory]) -> list[Memory]:
         """Extract reusable workflows, strategies, patterns across episodes."""
         ...
 
@@ -39,11 +40,11 @@ class HeuristicCompressionEngine(CompressionEngine):
     Suitable for environments without LLM access or for lightweight deployments.
     """
 
-    def compress_working_to_episodic(self, events: List[AgentEvent]) -> Memory:
+    def compress_working_to_episodic(self, events: list[AgentEvent]) -> Memory:
         if not events:
             raise ValueError("No events to compress")
 
-        narrative_parts: List[str] = []
+        narrative_parts: list[str] = []
         tags: set = set()
         categories: set = set()
 
@@ -82,9 +83,9 @@ class HeuristicCompressionEngine(CompressionEngine):
             ),
         )
 
-    def extract_semantic(self, episodic: Memory) -> List[Memory]:
+    def extract_semantic(self, episodic: Memory) -> list[Memory]:
         """Naive: extract structured fields as atomic facts."""
-        facts: List[Memory] = []
+        facts: list[Memory] = []
         if episodic.payload.structured:
             import time
             for key, value in episodic.payload.structured.items():
@@ -106,14 +107,14 @@ class HeuristicCompressionEngine(CompressionEngine):
                     ))
         return facts
 
-    def extract_procedural(self, episodes: List[Memory]) -> List[Memory]:
+    def extract_procedural(self, episodes: list[Memory]) -> list[Memory]:
         """Identify repeated categories across episodes as procedural patterns."""
         category_counts = defaultdict(int)
         for ep in episodes:
             for cat in ep.metadata.categories:
                 category_counts[cat] += 1
 
-        procedures: List[Memory] = []
+        procedures: list[Memory] = []
         import time
         for cat, count in category_counts.items():
             if count >= 2:

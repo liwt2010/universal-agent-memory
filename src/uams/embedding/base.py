@@ -1,6 +1,8 @@
 """Embedding provider interfaces."""
 
-from typing import Callable, List, Optional
+from __future__ import annotations
+
+from typing import Callable
 
 from uams.core.models import MemoryPayload
 
@@ -13,11 +15,11 @@ class EmbeddingProvider:
     OpenAI, Gemini, Voyage AI, etc.
     """
 
-    def embed(self, text: str) -> List[float]:
+    def embed(self, text: str) -> list[float]:
         """Return a dense vector for the given text."""
         raise NotImplementedError
 
-    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Return dense vectors for a batch of texts."""
         return [self.embed(t) for t in texts]
 
@@ -25,12 +27,12 @@ class EmbeddingProvider:
 class NoOpEmbeddingProvider(EmbeddingProvider):
     """Fallback: returns None/empty, disabling vector search."""
 
-    def embed(self, text: str) -> List[float]:
+    def embed(self, text: str) -> list[float]:
         return []
 
-    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
         return [[] for _ in texts]
 
 
 # Type alias for convenience
-EmbeddingFn = Optional[Callable[[str], List[float]]]
+EmbeddingFn = Callable[[str], list[float]] | None

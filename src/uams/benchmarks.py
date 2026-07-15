@@ -4,10 +4,12 @@ Measures key operations under various loads and memory sizes.
 Run with: python -m benchmarks.run
 """
 
+from __future__ import annotations
+
 import time
 import random
 import string
-from typing import List, Dict, Any
+from typing import Any
 
 from uams import (
     Memory, MemoryId, TemporalAnchor, AgentContext,
@@ -22,7 +24,7 @@ logger = get_logger(__name__)
 class BenchmarkResult:
     """Result of a single benchmark run."""
 
-    def __init__(self, name: str, elapsed: float, ops: int, details: Dict[str, Any] = None):
+    def __init__(self, name: str, elapsed: float, ops: int, details: dict[str, Any] = None):
         self.name = name
         self.elapsed = elapsed
         self.ops = ops
@@ -112,7 +114,7 @@ class BenchmarkSuite:
         return BenchmarkResult("delete_expired", elapsed, n, {"deleted": count})
 
     @classmethod
-    def run_all(cls, n: int = 1000) -> List[BenchmarkResult]:
+    def run_all(cls, n: int = 1000) -> list[BenchmarkResult]:
         """Run all benchmarks and return results."""
         logger.info("Starting UAMS benchmark suite (n=%d)...", n)
         results = []
@@ -124,7 +126,7 @@ class BenchmarkSuite:
         return results
 
     @classmethod
-    def print_report(cls, results: List[BenchmarkResult]) -> str:
+    def print_report(cls, results: list[BenchmarkResult]) -> str:
         """Generate a formatted benchmark report."""
         lines = ["\n" + "=" * 60, "UAMS Benchmark Report", "=" * 60]
         for r in results:

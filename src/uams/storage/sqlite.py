@@ -6,11 +6,13 @@ and thread-safe access via RLock + WAL mode + connection pool.
 All write operations are atomic (BEGIN/COMMIT/ROLLBACK).
 """
 
+from __future__ import annotations
+
 import json
 import sqlite3
 import threading
 from queue import Queue
-from typing import Any, List, Optional, Set, Tuple
+from typing import Any
 
 from uams.storage.base import MemoryStore
 from uams.core.models import Memory, MemoryId, TemporalAnchor, AgentContext, MemoryPayload, MemoryMetadata, Relation
@@ -51,7 +53,7 @@ class SQLiteStore(MemoryStore):
         # close connections held by in-flight threads (which the pool
         # itself can't see — they're between _get_connection() and
         # _return_connection() at the moment close() runs).
-        self._all_conns: Set[sqlite3.Connection] = set()
+        self._all_conns: set[sqlite3.Connection] = set()
 
         # Initialize pool connections
         for _ in range(pool_size):
@@ -228,7 +230,7 @@ class SQLiteStore(MemoryStore):
         # Example: if version == 2: conn.execute("ALTER TABLE ... ADD COLUMN ...")
         logger.info("Applied migration version %d", version)
 
-    def _memory_to_row(self, memory: Memory) -> Tuple:
+    def _memory_to_row(self, memory: Memory) -> tuple:
         return (
             str(memory.id),
             memory.anchor.created_at,
@@ -254,7 +256,7 @@ class SQLiteStore(MemoryStore):
             memory.context.project_id,
         )
 
-    def _row_to_memory(self, row: Tuple) -> Memory:
+    def _row_to_memory(self, row: tuple) -> Memory:
         (
             id_str, created_at, accessed_at, consolidated_at, expires_at,
             raw, structured_str, embedding_blob, mem_type, privacy,
@@ -330,7 +332,7 @@ class SQLiteStore(MemoryStore):
             finally:
                 self._return_connection(conn)
 
-    def retrieve(self, memory_id: str) -> Optional[Memory]:
+    def retrieve(self, memory_id: str) -> Memory | None:
         conn = self._get_connection()
         try:
             # The SELECT implicitly opens a read transaction in non-WAL
@@ -389,7 +391,7 @@ class SQLiteStore(MemoryStore):
             finally:
                 self._return_connection(conn)
 
-    def search_keywords(self, query: str, k: int = 10) -> List[Memory]:
+    def search_keywords(self, query: str, k: int = 10) -> list[Memory]:
         """FTS5 full-text search."""
         conn = self._get_connection()
         try:
@@ -439,8 +441,8 @@ class SQLiteStore(MemoryStore):
         return f'"{escaped}"'
 
     def search_vector(
-        self, vector: List[float], k: int = 10, **filters: Any
-    ) -> List[Memory]:
+        self, vector: list[float], k: int = 10, **filters: Any
+    ) -> list[Memory]:
         """SQLite does not support vector search natively. Fallback to recency."""
         conn = self._get_connection()
         try:
@@ -457,12 +459,12 @@ class SQLiteStore(MemoryStore):
         finally:
             self._return_connection(conn)
 
-    def search_graph(self, entity: str, depth: int = 2) -> List[Memory]:
+    def search_graph(self, entity: str, depth: int = 2) -> list[Memory]:
         """Graph traversal via relations JSON."""
         # This is expensive in SQLite. Return keyword match for now.
         return self.search_keywords(entity, k=10)
 
-    def list_all(self, limit: Optional[int] = 100) -> List[Memory]:
+    def list_all(self, limit: int | None = 100) -> list[Memory]:
         """List memories ordered by created_at DESC.
 
         ``limit=None`` returns all memories in the tier (capped at a

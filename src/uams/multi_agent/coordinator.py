@@ -3,11 +3,12 @@
 Thread-safe implementation with RLock.
 """
 
+from __future__ import annotations
+
 import time
 import threading
 import uuid
 from collections import defaultdict
-from typing import Dict, List, Optional, Set
 
 from uams.core.enums import PrivacyLevel
 from uams.core.models import Memory, MemoryId, MemoryPayload, MemoryMetadata, TemporalAnchor, AgentContext
@@ -25,7 +26,7 @@ class Lease:
         resource: str,
         holder: str,
         ttl: float = 300.0,
-        context: Optional[str] = None,
+        context: str | None = None,
     ):
         self.lease_id = str(uuid.uuid4())
         self.resource = resource
@@ -46,7 +47,7 @@ class Signal:
         sender: str,
         recipient: str,
         signal_type: str,
-        payload: Optional[Dict] = None,
+        payload: dict | None = None,
     ):
         self.signal_id = str(uuid.uuid4())
         self.sender = sender
@@ -54,7 +55,7 @@ class Signal:
         self.type = signal_type
         self.payload = payload or {}
         self.timestamp = time.time()
-        self.read_by: Set[str] = set()
+        self.read_by: set[str] = set()
 
 
 class MultiAgentCoordinator:
@@ -72,9 +73,9 @@ class MultiAgentCoordinator:
 
     def __init__(self, shared_store: MemoryStore, redis_client=None):
         self._shared = shared_store
-        self._leases: Dict[str, Lease] = {}
-        self._signals: List[Signal] = []
-        self._agent_scopes: Dict[str, Set[str]] = defaultdict(set)
+        self._leases: dict[str, Lease] = {}
+        self._signals: list[Signal] = []
+        self._agent_scopes: dict[str, set[str]] = defaultdict(set)
         self._lock = threading.RLock()
         self._redis_client = redis_client  # Optional: Redis for distributed locks
         # Set to True the first time a Redis call raises. Once disabled,
@@ -106,8 +107,8 @@ class MultiAgentCoordinator:
         agent_id: str,
         resource: str,
         ttl: float = 300.0,
-        context: Optional[str] = None,
-    ) -> Optional[Lease]:
+        context: str | None = None,
+    ) -> Lease | None:
         """
         Attempt to acquire an exclusive lease on a resource.
         Thread-safe. If redis_client is available, uses Redis distributed lock.
@@ -237,7 +238,7 @@ class MultiAgentCoordinator:
                 signal.sender, signal.recipient, signal.type
             )
 
-    def read_signals(self, agent_id: str) -> List[Signal]:
+    def read_signals(self, agent_id: str) -> list[Signal]:
         """
         Read all unread signals addressed to this agent (including broadcasts).
         Marks them as read.
@@ -259,7 +260,7 @@ class MultiAgentCoordinator:
     def share_memory(
         self,
         memory: Memory,
-        target_team: Optional[str] = None,
+        target_team: str | None = None,
     ) -> None:
         """
         Promote a memory to shared space.
@@ -275,7 +276,7 @@ class MultiAgentCoordinator:
             "Memory %s shared to team %s", memory.id, target_team
         )
 
-    def get_team_context(self, team_id: str, query: str) -> List[Memory]:
+    def get_team_context(self, team_id: str, query: str) -> list[Memory]:
         """Retrieve team-shared memories."""
         return self._shared.search_keywords(query, k=10)
 
@@ -284,7 +285,7 @@ class MultiAgentCoordinator:
         with self._lock:
             self._agent_scopes[team_id].add(agent_id)
 
-    def get_team_members(self, team_id: str) -> Set[str]:
+    def get_team_members(self, team_id: str) -> set[str]:
         """List all agents in a team."""
         with self._lock:
             return set(self._agent_scopes.get(team_id, set()))

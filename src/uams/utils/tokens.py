@@ -5,7 +5,7 @@ cheap character-based heuristics as fallback.
 Supports English, Chinese, and mixed text.
 """
 
-from typing import List, Optional
+from __future__ import annotations
 
 from uams.utils.logging import get_logger
 
@@ -39,7 +39,7 @@ class TokenEstimator:
                 logger.debug("tiktoken encoding failed, falling back to heuristic")
         return self._heuristic_estimate(text)
 
-    def estimate_batch(self, texts: List[str]) -> List[int]:
+    def estimate_batch(self, texts: list[str]) -> list[int]:
         if self._encoder:
             try:
                 return [len(self._encoder.encode(t)) for t in texts]
@@ -70,7 +70,7 @@ class TokenEstimator:
 
 
 # Global default estimator
-_default_estimator: Optional[TokenEstimator] = None
+_default_estimator: TokenEstimator | None = None
 
 
 def get_default_estimator() -> TokenEstimator:

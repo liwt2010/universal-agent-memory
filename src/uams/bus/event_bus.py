@@ -3,8 +3,10 @@
 Thread-safe implementation with RLock.
 """
 
+from __future__ import annotations
+
 import threading
-from typing import Dict, List, Optional, Protocol
+from typing import Protocol
 from collections import defaultdict
 
 from uams.core.enums import EventType
@@ -29,16 +31,16 @@ class EventBus:
     """
 
     def __init__(self, max_buffer_size: int = 1000):
-        self._handlers: Dict[EventType, List[EventHandler]] = defaultdict(list)
-        self._global_handlers: List[EventHandler] = []
-        self._history: List[AgentEvent] = []
+        self._handlers: dict[EventType, list[EventHandler]] = defaultdict(list)
+        self._global_handlers: list[EventHandler] = []
+        self._history: list[AgentEvent] = []
         self._max_buffer_size = max_buffer_size
         self._lock = threading.RLock()
 
     def subscribe(
         self,
         handler: EventHandler,
-        event_types: Optional[List[EventType]] = None,
+        event_types: list[EventType] | None = None,
     ) -> None:
         with self._lock:
             if event_types is None:
@@ -80,7 +82,7 @@ class EventBus:
                     event.event_type.name,
                 )
 
-    def get_recent(self, n: int = 50) -> List[AgentEvent]:
+    def get_recent(self, n: int = 50) -> list[AgentEvent]:
         with self._lock:
             return self._history[-n:]
 
@@ -88,7 +90,7 @@ class EventBus:
         self,
         event_type: EventType,
         limit: int = 50,
-    ) -> List[AgentEvent]:
+    ) -> list[AgentEvent]:
         with self._lock:
             matching = [e for e in self._history if e.event_type == event_type]
             return matching[-limit:]
@@ -96,7 +98,7 @@ class EventBus:
     def get_events_by_session(
         self,
         session_id: str,
-    ) -> List[AgentEvent]:
+    ) -> list[AgentEvent]:
         with self._lock:
             return [e for e in self._history if e.agent_context.session_id == session_id]
 

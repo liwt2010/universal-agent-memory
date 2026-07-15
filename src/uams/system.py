@@ -4,10 +4,12 @@ Integrates event bus, tiered storage, compression, retrieval, and multi-agent co
 All operations are thread-safe and include error handling with graceful degradation.
 """
 
+from __future__ import annotations
+
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Callable
 
 from uams.llm.client import LLMClient
 from uams.core.enums import EventType, MemoryType, PrivacyLevel
@@ -39,7 +41,6 @@ from uams.pipeline.cascade import (
     CascadeReport,
     CascadeStrategy,
 )
-from typing import Optional, Tuple, Union
 
 logger = get_logger(__name__)
 
@@ -58,11 +59,11 @@ class ConsolidateResult:
     """
     session_id: str
     source_event_count: int = 0
-    episodic_memory_id: Optional[str] = None
+    episodic_memory_id: str | None = None
     semantic_facts: int = 0
     procedural_patterns: int = 0
     duration_ms: float = 0.0
-    error: Optional[str] = None
+    error: str | None = None
 
 
 class UniversalMemorySystem(EventHandler):
@@ -75,12 +76,12 @@ class UniversalMemorySystem(EventHandler):
 
     def __init__(
         self,
-        stores: Optional[Dict[MemoryType, MemoryStore]] = None,
-        compression: Optional[CompressionEngine] = None,
+        stores: dict[MemoryType, MemoryStore] | None = None,
+        compression: CompressionEngine | None = None,
         embedding_fn: EmbeddingFn = None,
-        privacy_filter: Optional[PrivacyFilter] = None,
-        dedup_window: Optional[DeduplicationWindow] = None,
-        config: Optional[UAMSConfig] = None,
+        privacy_filter: PrivacyFilter | None = None,
+        dedup_window: DeduplicationWindow | None = None,
+        config: UAMSConfig | None = None,
     ):
         self._config = config or UAMSConfig.from_env()
         self._config.validate()
@@ -124,7 +125,7 @@ class UniversalMemorySystem(EventHandler):
             config=self._config,
             audit_writer=self._cascade_audit,
         )
-        self._coordinator: Optional[MultiAgentCoordinator] = None
+        self._coordinator: MultiAgentCoordinator | None = None
 
         # Embedding callable: explicit kwarg wins; otherwise build from config.
         if embedding_fn is not None:
@@ -136,7 +137,7 @@ class UniversalMemorySystem(EventHandler):
         self._bus.subscribe(self, [EventType.SESSION_END, EventType.SUBSESSION_END])
 
         # Session tracking: session_id -> list of events
-        self._session_events: Dict[str, List[AgentEvent]] = {}
+        self._session_events: dict[str, list[AgentEvent]] = {}
         self._session_lock = threading.RLock()
         # Process-wide lock for decay_sweep: prevents two concurrent sweeps
         # (e.g. a slow SQLite sweep that runs >60s colliding with the next
@@ -330,7 +331,7 @@ class UniversalMemorySystem(EventHandler):
             return CachedLLMClient(inner, max_entries=in_process_max_entries)
         return inner
 
-    def _init_stores_from_config(self) -> Dict[MemoryType, MemoryStore]:
+    def _init_stores_from_config(self) -> dict[MemoryType, MemoryStore]:
         """Initialize storage backends based on configuration."""
         backend = self._config.storage_backend
         max_cap = self._config.memory_capacity
@@ -547,8 +548,8 @@ class UniversalMemorySystem(EventHandler):
         importance: float = 5.0,
         category: str = "general",
         privacy: PrivacyLevel = PrivacyLevel.PUBLIC,
-        tags: Optional[set] = None,
-    ) -> Optional[MemoryId]:
+        tags: set | None = None,
+    ) -> MemoryId | None:
         """
         Explicitly save a fact/preference/pattern to semantic memory.
         Returns MemoryId on success, None on failure (graceful degradation).
@@ -568,7 +569,7 @@ class UniversalMemorySystem(EventHandler):
             safe_fact = InputValidator.sanitize_all(truncated_fact, max_length=self._config.max_raw_length)
 
             # --- Embedding (also reused for dedup) ---
-            embedding: Optional[List[float]] = None
+            embedding: list[float] | None = None
             if self._embedding_fn:
                 try:
                     embedding = self._embedding_fn(truncated_fact)
@@ -625,9 +626,9 @@ class UniversalMemorySystem(EventHandler):
 
     def _find_dedup_match(
         self,
-        embedding: List[float],
+        embedding: list[float],
         threshold: float,
-    ) -> Tuple[Optional["Memory"], float]:
+    ) -> tuple[Memory | None, float]:
         """Search SEMANTIC store for an existing memory with cosine sim
         >= threshold to ``embedding``.
 
@@ -643,7 +644,7 @@ class UniversalMemorySystem(EventHandler):
         except Exception:
             logger.exception("Dedup search_vector failed; treating as no-match")
             return None, 0.0
-        best: Optional[Memory] = None
+        best: Memory | None = None
         best_sim = 0.0
         for mem in candidates:
             existing_emb = mem.payload.embedding
@@ -658,7 +659,7 @@ class UniversalMemorySystem(EventHandler):
         return None, 0.0
 
     @staticmethod
-    def _cosine_similarity(a: List[float], b: List[float]) -> float:
+    def _cosine_similarity(a: list[float], b: list[float]) -> float:
         """Plain-Python cosine similarity (no numpy dependency)."""
         if not a or not b or len(a) != len(b):
             return 0.0
@@ -679,7 +680,7 @@ class UniversalMemorySystem(EventHandler):
         context: AgentContext,
         budget_tokens: int = None,
         include_working: bool = True,
-    ) -> List[Memory]:
+    ) -> list[Memory]:
         """
         Retrieve relevant memories for injection into agent context.
         Never raises. Returns empty list on any failure.
@@ -712,9 +713,9 @@ class UniversalMemorySystem(EventHandler):
         self,
         memory_id: str,
         *,
-        cascade: Union[CascadeStrategy, str] = CascadeStrategy.BIDIRECTIONAL,
-        max_depth: Optional[int] = None,
-        in_edge_mode: Optional[str] = None,
+        cascade: CascadeStrategy | str = CascadeStrategy.BIDIRECTIONAL,
+        max_depth: int | None = None,
+        in_edge_mode: str | None = None,
     ) -> CascadeReport:
         """Forget a memory with configurable cascade.
 
@@ -742,7 +743,7 @@ class UniversalMemorySystem(EventHandler):
     def revoke_agent(
         self,
         agent_id: str,
-        cascade: Union[CascadeStrategy, str] = CascadeStrategy.BIDIRECTIONAL,
+        cascade: CascadeStrategy | str = CascadeStrategy.BIDIRECTIONAL,
     ) -> int:
         """Delete all memories whose ``context.agent_id`` matches.
 
@@ -762,7 +763,7 @@ class UniversalMemorySystem(EventHandler):
     def revoke_project(
         self,
         project_id: str,
-        cascade: Union[CascadeStrategy, str] = CascadeStrategy.BIDIRECTIONAL,
+        cascade: CascadeStrategy | str = CascadeStrategy.BIDIRECTIONAL,
     ) -> int:
         """Delete all memories whose ``context.project_id`` matches.
 
@@ -774,7 +775,7 @@ class UniversalMemorySystem(EventHandler):
     def delete_by_project_id(
         self,
         project_id: str,
-        tenant_id: Optional[str] = None,
+        tenant_id: str | None = None,
     ) -> int:
         """Delete all memories whose ``context.project_id`` matches.
 
@@ -838,7 +839,7 @@ class UniversalMemorySystem(EventHandler):
         self,
         field: str,
         value: str,
-        cascade: Union[CascadeStrategy, str] = CascadeStrategy.BIDIRECTIONAL,
+        cascade: CascadeStrategy | str = CascadeStrategy.BIDIRECTIONAL,
     ) -> int:
         """Shared helper for revoke_agent / revoke_project.
 
@@ -875,7 +876,7 @@ class UniversalMemorySystem(EventHandler):
         )
         return total
 
-    def consolidate(self, session_id: Optional[str] = None) -> ConsolidateResult:
+    def consolidate(self, session_id: str | None = None) -> ConsolidateResult:
         """Manually trigger 4-tier memory consolidation.
 
         Returns a ``ConsolidateResult`` describing the outcome — never raises.
@@ -896,7 +897,7 @@ class UniversalMemorySystem(EventHandler):
                     session_id="<none>",
                     duration_ms=(time.monotonic() - start) * 1000.0,
                 )
-            results: List[ConsolidateResult] = []
+            results: list[ConsolidateResult] = []
             for sid in sids:
                 results.append(self._consolidate_session(sid))
             # Aggregate. The last result wins for "headline" fields;
@@ -922,7 +923,7 @@ class UniversalMemorySystem(EventHandler):
                 error=str(exc),
             )
 
-    def get_session_summary(self, session_id: str) -> Optional[Memory]:
+    def get_session_summary(self, session_id: str) -> Memory | None:
         """Get the episodic summary of a completed session."""
         try:
             results = self._stores[MemoryType.EPISODIC].search_keywords(session_id, k=1)
@@ -979,7 +980,7 @@ class UniversalMemorySystem(EventHandler):
 
     # --- Multi-agent primitives ---
 
-    def enable_multi_agent(self, shared_store: Optional[MemoryStore] = None) -> None:
+    def enable_multi_agent(self, shared_store: MemoryStore | None = None) -> None:
         """Enable multi-agent coordination with a shared memory space."""
         try:
             if shared_store is None:
@@ -1025,7 +1026,7 @@ class UniversalMemorySystem(EventHandler):
         except Exception:
             logger.exception("send_signal() failed")
 
-    def read_signals(self, agent_id: str) -> List[Signal]:
+    def read_signals(self, agent_id: str) -> list[Signal]:
         """Read all unread signals for this agent."""
         try:
             if not self._coordinator:
@@ -1035,7 +1036,7 @@ class UniversalMemorySystem(EventHandler):
             logger.exception("read_signals() failed")
             return []
 
-    def share_memory(self, memory: Memory, target_team: Optional[str] = None) -> None:
+    def share_memory(self, memory: Memory, target_team: str | None = None) -> None:
         """Promote a memory to the shared team space."""
         try:
             if not self._coordinator:
@@ -1051,7 +1052,7 @@ class UniversalMemorySystem(EventHandler):
         self,
         *,
         scan_limit: int = 1000,
-    ) -> Dict[str, int]:
+    ) -> dict[str, int]:
         """Return memory counts per tier.
 
         Uses ``MemoryStore.count()`` (O(1) round-trip on SQLite / PG /
@@ -1067,7 +1068,7 @@ class UniversalMemorySystem(EventHandler):
         but does so without paying the O(N) cost.
         """
         try:
-            result: Dict[str, int] = {}
+            result: dict[str, int] = {}
             for tier, store in self._stores.items():
                 try:
                     n = store.count()
@@ -1080,7 +1081,7 @@ class UniversalMemorySystem(EventHandler):
             logger.exception("get_stats() failed")
             return {}
 
-    def get_event_history(self, n: int = 50) -> List[AgentEvent]:
+    def get_event_history(self, n: int = 50) -> list[AgentEvent]:
         """Return recent events from the event bus."""
         try:
             return self._bus.get_recent(n)

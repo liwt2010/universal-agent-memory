@@ -4,7 +4,9 @@ Optional dependency: requires `pip install chromadb`.
 Gracefully degrades to InMemoryStore if chromadb is not available.
 """
 
-from typing import Any, Dict, List, Optional
+from __future__ import annotations
+
+from typing import Any
 
 from uams.storage.base import MemoryStore
 from uams.core.models import (
@@ -24,7 +26,7 @@ class ChromaDBStore(MemoryStore):
     Falls back to keyword search if embeddings are not available.
     """
 
-    def __init__(self, collection_name: str = "uams", persist_directory: Optional[str] = None):
+    def __init__(self, collection_name: str = "uams", persist_directory: str | None = None):
         try:
             import chromadb
             self._client = chromadb.Client() if not persist_directory else chromadb.PersistentClient(path=persist_directory)
@@ -66,7 +68,7 @@ class ChromaDBStore(MemoryStore):
         except Exception:
             logger.exception("ChromaDB store failed for memory %s", memory.id)
 
-    def retrieve(self, memory_id: str) -> Optional[Memory]:
+    def retrieve(self, memory_id: str) -> Memory | None:
         if not self._available:
             return None
         try:
@@ -80,7 +82,7 @@ class ChromaDBStore(MemoryStore):
             meta = results["metadatas"][0]
             doc = results["documents"][0]
             emb = results.get("embeddings", [None])[0]
-            # chromadb 1.x returns numpy ndarray; callers expect List[float]
+            # chromadb 1.x returns numpy ndarray; callers expect list[float]
             embedding = emb.tolist() if emb is not None and hasattr(emb, "tolist") else emb
 
             return Memory(
@@ -125,7 +127,7 @@ class ChromaDBStore(MemoryStore):
             logger.exception("ChromaDB delete failed for %s", memory_id)
             return False
 
-    def search_keywords(self, query: str, k: int = 10) -> List[Memory]:
+    def search_keywords(self, query: str, k: int = 10) -> list[Memory]:
         # ChromaDB is vector-first; keyword search is via query_documents
         if not self._available:
             return []
@@ -169,8 +171,8 @@ class ChromaDBStore(MemoryStore):
             return []
 
     def search_vector(
-        self, vector: List[float], k: int = 10, **filters: Any
-    ) -> List[Memory]:
+        self, vector: list[float], k: int = 10, **filters: Any
+    ) -> list[Memory]:
         if not self._available or not vector:
             return []
         # Reject zero / all-zero vectors — cosine distance is undefined (0/0)
@@ -219,10 +221,10 @@ class ChromaDBStore(MemoryStore):
             logger.exception("ChromaDB vector search failed")
             return []
 
-    def search_graph(self, entity: str, depth: int = 2) -> List[Memory]:
+    def search_graph(self, entity: str, depth: int = 2) -> list[Memory]:
         return []
 
-    def list_all(self, limit: int = 100) -> List[Memory]:
+    def list_all(self, limit: int = 100) -> list[Memory]:
         return []
 
     def delete_expired(self) -> int:

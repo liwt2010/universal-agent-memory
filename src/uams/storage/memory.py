@@ -7,11 +7,13 @@ Suitable for testing and single-process deployments.
 Production: swap for SQLiteStore, ChromaDBStore, etc.
 """
 
+from __future__ import annotations
+
 import math
 import re
 import threading
 from collections import defaultdict, OrderedDict
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 from uams.storage.base import MemoryStore
 from uams.core.models import Memory
@@ -44,7 +46,7 @@ class InMemoryStore(MemoryStore):
     def __init__(self, max_capacity: int = 10000):
         self._max_capacity = max_capacity
         self._memories: OrderedDict[str, Memory] = OrderedDict()
-        self._keyword_index: Dict[str, Set[str]] = defaultdict(set)
+        self._keyword_index: dict[str, set[str]] = defaultdict(set)
         self._lock = threading.RLock()
 
     def store(self, memory: Memory) -> None:
@@ -64,7 +66,7 @@ class InMemoryStore(MemoryStore):
             for token in tokens:
                 self._keyword_index[token].add(mid)
 
-    def retrieve(self, memory_id: str) -> Optional[Memory]:
+    def retrieve(self, memory_id: str) -> Memory | None:
         with self._lock:
             mem = self._memories.get(memory_id)
             if mem:
@@ -81,10 +83,10 @@ class InMemoryStore(MemoryStore):
                 token_set.discard(memory_id)
             return True
 
-    def search_keywords(self, query: str, k: int = 10) -> List[Memory]:
+    def search_keywords(self, query: str, k: int = 10) -> list[Memory]:
         """Simple TF-like scoring: count matching tokens."""
         tokens = self._tokenize(query.lower())
-        scores: Dict[str, int] = defaultdict(int)
+        scores: dict[str, int] = defaultdict(int)
 
         with self._lock:
             for token in tokens:
@@ -102,8 +104,8 @@ class InMemoryStore(MemoryStore):
             return results
 
     def search_vector(
-        self, vector: List[float], k: int = 10, **filters: Any
-    ) -> List[Memory]:
+        self, vector: list[float], k: int = 10, **filters: Any
+    ) -> list[Memory]:
         """
         Real cosine similarity over memory embeddings.
 
@@ -128,7 +130,7 @@ class InMemoryStore(MemoryStore):
         # Snapshot memories + embeddings under lock, then sort outside the
         # lock (O(N log N) Python sort vs. holding the RLock — same pattern
         # as search_keywords keeps locks short).
-        scored: List[Tuple[float, Memory]] = []
+        scored: list[tuple[float, Memory]] = []
         with self._lock:
             snapshot = list(self._memories.items())
             query_dim = len(vector)
@@ -149,7 +151,7 @@ class InMemoryStore(MemoryStore):
         # Stable sort by score desc; if equal, by created_at desc (tiebreaker)
         scored.sort(key=lambda pair: (pair[0], pair[1].anchor.created_at), reverse=True)
 
-        results: List[Memory] = []
+        results: list[Memory] = []
         with self._lock:
             for _score, mem in scored[:k]:
                 if mem.payload is None:
@@ -162,7 +164,7 @@ class InMemoryStore(MemoryStore):
         return results
 
     @staticmethod
-    def _cosine_similarity(a: List[float], b: List[float]) -> float:
+    def _cosine_similarity(a: list[float], b: list[float]) -> float:
         """Cosine similarity in [-1, 1].
 
         Returns 0.0 for: dimension mismatch, empty inputs, or zero-norm
@@ -188,8 +190,8 @@ class InMemoryStore(MemoryStore):
 
     @staticmethod
     def _cosine_or_none(
-        a: List[float], b: List[float], a_sq: float
-    ) -> Optional[float]:
+        a: list[float], b: list[float], a_sq: float
+    ) -> float | None:
         """Like ``_cosine_similarity`` but returns ``None`` when ``b`` has
         zero norm (cosine undefined). The caller precomputes ``a_sq``
         (norm-squared of the query, known to be > 0 by the caller) to
@@ -211,7 +213,7 @@ class InMemoryStore(MemoryStore):
         return dot / (math.sqrt(a_sq) * math.sqrt(b_sq))
 
     @staticmethod
-    def _metadata_matches(mem: Memory, filters: Dict[str, Any]) -> bool:
+    def _metadata_matches(mem: Memory, filters: dict[str, Any]) -> bool:
         """Equality check on metadata attributes exposed to vector search.
 
         Currently supported filter keys:
@@ -238,11 +240,11 @@ class InMemoryStore(MemoryStore):
                 return False
         return True
 
-    def search_graph(self, entity: str, depth: int = 2) -> List[Memory]:
+    def search_graph(self, entity: str, depth: int = 2) -> list[Memory]:
         """BFS over memory relations."""
-        results: List[Memory] = []
-        visited: Set[str] = set()
-        queue: List[Tuple[str, int]] = [(entity, 0)]
+        results: list[Memory] = []
+        visited: set[str] = set()
+        queue: list[tuple[str, int]] = [(entity, 0)]
 
         with self._lock:
             while queue:
@@ -262,7 +264,7 @@ class InMemoryStore(MemoryStore):
 
             return results
 
-    def list_all(self, limit: int = 100) -> List[Memory]:
+    def list_all(self, limit: int = 100) -> list[Memory]:
         with self._lock:
             return list(self._memories.values())[:limit]
 
@@ -311,6 +313,6 @@ class InMemoryStore(MemoryStore):
         logger.debug("InMemoryStore closed")
 
     @staticmethod
-    def _tokenize(text: str) -> List[str]:
+    def _tokenize(text: str) -> list[str]:
         """Simple word tokenization supporting CJK."""
         return re.findall(r"[a-zA-Z0-9\u4e00-\u9fff]+", text)

@@ -21,7 +21,6 @@ import html
 import re
 import threading
 import time
-from typing import Dict, List
 
 from uams.utils.logging import get_logger
 
@@ -104,7 +103,7 @@ class RateLimiter:
     def __init__(self, max_requests: int = 100, window_seconds: float = 60.0):
         self._max_requests = max_requests
         self._window_seconds = window_seconds
-        self._requests: Dict[str, List[float]] = {}
+        self._requests: dict[str, list[float]] = {}
         self._lock = threading.Lock()
 
     def is_allowed(self, key: str) -> bool:

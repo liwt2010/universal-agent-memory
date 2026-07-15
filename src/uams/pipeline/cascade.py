@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Deque, Dict, List, Optional, Set, Tuple
+from typing import Deque
 
 from uams.config import UAMSConfig
 from uams.core.enums import MemoryType
@@ -56,20 +56,20 @@ class CascadeStrategy(str, Enum):
 class CascadeReport:
     """Outcome of a `CascadeForgetter.forget()` invocation."""
     target_id: str
-    tier: Optional[MemoryType]
+    tier: MemoryType | None
     strategy: CascadeStrategy
 
-    deleted_ids: List[str] = field(default_factory=list)
+    deleted_ids: list[str] = field(default_factory=list)
     # In FULL_CASCADE mode, cross-tier edges that were also deleted
     # are recorded here as (id, original_tier) so the operator can see
     # exactly which memories left the system and from which storage layer.
     # This is the GDPR-friendly "right to be forgotten" trail.
-    cross_tier_deleted_ids: List[Tuple[str, str]] = field(default_factory=list)
-    orphan_ids:  List[Tuple[str, str]] = field(default_factory=list)
-    failed_ids:  List[Tuple[str, str]] = field(default_factory=list)
+    cross_tier_deleted_ids: list[tuple[str, str]] = field(default_factory=list)
+    orphan_ids:  list[tuple[str, str]] = field(default_factory=list)
+    failed_ids:  list[tuple[str, str]] = field(default_factory=list)
 
     duration_ms: float = 0.0
-    audit_log_path: Optional[Path] = None
+    audit_log_path: Path | None = None
 
     @property
     def deleted_count(self) -> int: return len(self.deleted_ids)
@@ -115,7 +115,7 @@ class CascadeForgetter:
 
     def __init__(
         self,
-        stores: Dict[MemoryType, MemoryStore],
+        stores: dict[MemoryType, MemoryStore],
         config: UAMSConfig,
         audit_writer,            # CascadeAuditWriter - local import avoided for cycle safety
     ) -> None:
@@ -127,7 +127,7 @@ class CascadeForgetter:
     # Discovery helpers (Task 4)
     # ------------------------------------------------------------------
 
-    def _locate_tier(self, memory_id: str) -> Optional[MemoryType]:
+    def _locate_tier(self, memory_id: str) -> MemoryType | None:
         """Find the tier that holds `memory_id`, or None if absent.
 
         Tries retrieve() on each tier in declaration order. Treats
@@ -157,8 +157,8 @@ class CascadeForgetter:
         self,
         target_id: str,
         tier: MemoryType,
-        mode: Optional[str] = None,
-    ) -> List[Tuple[str, MemoryType]]:
+        mode: str | None = None,
+    ) -> list[tuple[str, MemoryType]]:
         """Return list of (source_memory_id, source_tier) referencing target_id.
 
         Modes (per spec sec 7):
@@ -167,7 +167,7 @@ class CascadeForgetter:
           'auto'  Try index per-store; fall back to scan per-store.
         """
         mode = mode or self._config.cascade_in_edge_strategy
-        results: List[Tuple[str, MemoryType]] = []
+        results: list[tuple[str, MemoryType]] = []
 
         for t, store in self._stores.items():
             if mode == "index":
@@ -193,9 +193,9 @@ class CascadeForgetter:
 
     def _scan_in_edges_for_store(
         self, store: MemoryStore, target_id: str, tier: MemoryType,
-    ) -> List[Tuple[str, MemoryType]]:
+    ) -> list[tuple[str, MemoryType]]:
         """O(N) scan: list_all then filter relations whose target == target_id."""
-        out: List[Tuple[str, MemoryType]] = []
+        out: list[tuple[str, MemoryType]] = []
         try:
             iterator = store.list_all(limit=10_000_000)
         except Exception:
@@ -216,8 +216,8 @@ class CascadeForgetter:
         memory_id: str,
         *,
         strategy=None,                              # CascadeStrategy | str | None
-        max_depth: Optional[int] = None,
-        in_edge_mode: Optional[str] = None,
+        max_depth: int | None = None,
+        in_edge_mode: str | None = None,
     ) -> CascadeReport:
         """Forget a memory and (per strategy) its related memories.
 
@@ -274,12 +274,12 @@ class CascadeForgetter:
         # Queue carries (id, tier, depth) so the loop can dispatch
         # retrieve/delete to the correct store when FULL_CASCADE lets
         # us cross tier boundaries.
-        visit_set: Set[str] = {memory_id}
-        queue: Deque[Tuple[str, MemoryType, int]] = deque([(memory_id, target_tier, 0)])
+        visit_set: set[str] = {memory_id}
+        queue: Deque[tuple[str, MemoryType, int]] = deque([(memory_id, target_tier, 0)])
         # (id, originating_tier) — same-tier items have tier == target_tier;
         # cross-tier items carry the tier they were discovered in, so the
         # delete phase hits the right store and the audit records the tier.
-        discovered: List[Tuple[str, MemoryType]] = []
+        discovered: list[tuple[str, MemoryType]] = []
 
         while queue:
             cur_id, cur_tier, depth = queue.popleft()

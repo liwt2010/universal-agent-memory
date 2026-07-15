@@ -10,9 +10,11 @@ Features:
 - Prepared statements for performance
 """
 
+from __future__ import annotations
+
 import json
 import threading
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from uams.storage.base import MemoryStore
 from uams.core.models import (
@@ -44,7 +46,7 @@ class PostgreSQLStore(MemoryStore):
         table_name: str = "uams_memories",
         pool_min: int = 1,
         pool_max: int = 10,
-        ttl_seconds: Optional[float] = None,
+        ttl_seconds: float | None = None,
     ):
         self._host = host
         self._port = port
@@ -211,7 +213,7 @@ class PostgreSQLStore(MemoryStore):
         # Future migrations here
         logger.info("Applied PostgreSQL migration version %d", version)
 
-    def _memory_to_dict(self, memory: Memory) -> Dict[str, Any]:
+    def _memory_to_dict(self, memory: Memory) -> dict[str, Any]:
         return {
             "id": str(memory.id),
             "created_at": memory.anchor.created_at,
@@ -240,7 +242,7 @@ class PostgreSQLStore(MemoryStore):
             "project_id": memory.context.project_id,
         }
 
-    def _row_to_memory(self, row: Tuple) -> Optional[Memory]:
+    def _row_to_memory(self, row: tuple) -> Memory | None:
         try:
             (id_str, created_at, accessed_at, consolidated_at, expires_at,
              raw, structured_str, embedding_blob, mem_type, privacy,
@@ -351,7 +353,7 @@ class PostgreSQLStore(MemoryStore):
         finally:
             self._put_conn(conn)
 
-    def retrieve(self, memory_id: str) -> Optional[Memory]:
+    def retrieve(self, memory_id: str) -> Memory | None:
         if not self._available or not self._pool:
             return None
         conn = self._get_conn()
@@ -393,7 +395,7 @@ class PostgreSQLStore(MemoryStore):
         finally:
             self._put_conn(conn)
 
-    def search_keywords(self, query: str, k: int = 10) -> List[Memory]:
+    def search_keywords(self, query: str, k: int = 10) -> list[Memory]:
         if not self._available or not self._pool:
             return []
         conn = self._get_conn()
@@ -428,12 +430,12 @@ class PostgreSQLStore(MemoryStore):
             self._put_conn(conn)
 
     def search_vector(
-        self, vector: List[float], k: int = 10, **filters: Any
-    ) -> List[Memory]:
+        self, vector: list[float], k: int = 10, **filters: Any
+    ) -> list[Memory]:
         """PostgreSQL does not natively support vector search (without pgvector). Fallback to recency."""
         return self._recent_memories(k)
 
-    def search_graph(self, entity: str, depth: int = 2) -> List[Memory]:
+    def search_graph(self, entity: str, depth: int = 2) -> list[Memory]:
         if not self._available or not self._pool:
             return []
         try:
@@ -459,10 +461,10 @@ class PostgreSQLStore(MemoryStore):
             logger.exception("PostgreSQL graph search failed")
             return []
 
-    def list_all(self, limit: int = 100) -> List[Memory]:
+    def list_all(self, limit: int = 100) -> list[Memory]:
         return self._recent_memories(limit)
 
-    def _recent_memories(self, limit: int) -> List[Memory]:
+    def _recent_memories(self, limit: int) -> list[Memory]:
         if not self._available or not self._pool:
             return []
         conn = self._get_conn()

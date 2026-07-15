@@ -10,9 +10,11 @@ Supports exporting and importing memory data across backends:
 Format: JSON Lines (JSONL) with one Memory per line.
 """
 
+from __future__ import annotations
+
 import json
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from uams.storage.base import MemoryStore
 from uams.storage.memory import InMemoryStore
@@ -29,7 +31,7 @@ class BackupManager:
     def __init__(self, store: MemoryStore):
         self._store = store
 
-    def backup_to_file(self, filepath: str, limit: int = 100000) -> Optional[int]:
+    def backup_to_file(self, filepath: str, limit: int = 100000) -> int | None:
         """Export all memories to a JSONL file.
 
         Returns number of memories exported on success, or None on
@@ -51,7 +53,7 @@ class BackupManager:
             logger.error("Backup failed to %s", filepath, exc_info=True)
             return None
 
-    def restore_from_file(self, filepath: str) -> Optional[int]:
+    def restore_from_file(self, filepath: str) -> int | None:
         """Import memories from a JSONL file.
 
         Returns number of memories imported on success, or None on
@@ -102,7 +104,7 @@ class BackupManager:
             logger.error("Restore failed from %s", filepath, exc_info=True)
             return None
 
-    def backup_to_dict(self, limit: int = 100000) -> List[Dict[str, Any]]:
+    def backup_to_dict(self, limit: int = 100000) -> list[dict[str, Any]]:
         """Export all memories to a list of dictionaries."""
         try:
             memories = self._store.list_all(limit=limit)
@@ -111,7 +113,7 @@ class BackupManager:
             logger.exception("Backup to dict failed")
             return []
 
-    def restore_from_dict(self, data: List[Dict[str, Any]]) -> int:
+    def restore_from_dict(self, data: list[dict[str, Any]]) -> int:
         """Import memories from a list of dictionaries."""
         count = 0
         for item in data:
