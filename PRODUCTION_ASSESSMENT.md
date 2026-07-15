@@ -1,5 +1,27 @@
 # UAMS 生产级评估报告（诚实评级 + 实测更新版）
 
+> **2026-07-15 v8 更新(本次)**:本次为 **第二轮安全加固批次**(v0.5.0)。在 v7 之后,工作树里出现了一份未提交的 hardening pass。我逐文件审计 + 修订,**关闭了 4 个真实攻击面**:
+> - **R1(已存真 bug)**:`Memory.to_json` / `from_json` 静默丢失 `embedding` + `relations`,导致 backup/restore 后向量搜索失效 + cascade-forget in-edge discovery 不可达。这是 v0.3.0 R1(pickle→json)之后又一处**真数据丢失 bug**。修复:`to_json` 现在序列化两个字段,`from_json` 向后兼容(默认值)读取。
+> - **R2(已存真 bug)**:`embedding_serde.deserialize_embedding` 还有 `pickle.loads` fallback,**这是一条 RCE 路径**:如果攻击者能写入共享存储,下一个 `retrieve()` 会执行任意 Python。修复:永久删除 pickle 路径,legacy blob 拒绝并 log ERROR。迁移脚本写在模块 docstring 里。这是 v0.3.0 R1 的**完全消解**(v0.3.0 留了 pickle 后备做向后兼容,v0.5.0 彻底清掉)。
+> - **R3(已存真 bug,新增)**:RateLimiter 的 check-then-append 无锁,在并发下可能放过超过 `max_requests` 的请求(P2 #13 race,二审标注但未修)。修复:加 `threading.Lock`,8 线程 × 100 调用回归测试精确卡阈值。
+> - **R4(新增)**:`UAMSConfig.validate()` 不校验 `postgresql_table` / `redis_key_prefix` / `cascade_audit_log_path` / `cascade_max_depth` —— **真实可注入点**:用户输入的 table 名会直接拼进 raw DDL。修复:加 whitelist + shell-meta 字符校验 + cascade depth 上限。
+>
+> **额外**:`AgentContext.tenant_id` 加进来配合 v0.4.0 的 `delete_by_project_id(project_id, tenant_id=...)`,给多租户隔离一个落地字段。
+>
+> **总账**:1 个 commit (`e6998e6`) + 7 文件改动,470 行新增 / 159 行删除,**净 +311 行**。其中 80% 是新增测试 + 配置校验 + 文档,20% 是新方法(`is_safe_identifier` / `tenant_id`)。测试 483 → **488 pass** (+5, 0 regressions)。
+>
+> **v8 评级动作 — 维持 A-**:v0.5.0 **没有引入新能力**(公开 API surface 没动),而是**关闭了 v0.3.0 留下的两个兼容垫片**(pickle fallback + sanitize_sql 黑名单)。评级动作:仍维持 A-,因为:
+> - R1(embedding/relations 丢失)是**真数据丢失 bug**,严重程度等同于 v0.3.0 的真问题,但 v0.5.0 已经修好,不能算"A- → A+"
+> - R2(RCE 路径)是 v0.3.0 R1 的**完全消解**,完成 pen-test 前置的最后一道闸
+> - R3(RateLimiter race)是 P2 → P0 的升级(并发场景下绕过限流)
+> - R4(config 不校验可注入字段)是 v0.3.0 R1 后的**新发现的可注入点**
+>
+> 这 4 个修复**消除了一类潜在 RCE**,客观上是生产安全基线级别收尾。**距 A+ 仍缺**:真实 case study / 真实 LLM 月报 / 第三方 pen-test / 6 后端 cluster 演练 / Helm,这 5 个缺口与 v0.3.0 → v0.5.0 之间无变化。
+>
+> **v0.5.0 是 breaking release**(semver 0.4.0 → 0.5.0 而非 0.4.1,因为有两个 removal):
+> 1. `InputValidator.sanitize_sql` 移除。调用方应改用参数化查询 + `is_safe_identifier` 白名单。
+> 2. Pre-v0.4.0 的 pickle-encoded embeddings roundtrip 成 `embedding=None`。需要运行 `embedding_serde` docstring 里的迁移脚本(对带 legacy 数据的部署是必须的一步)。
+
 > **2026-07-12 v7 更新(本次)**:本次为 **独立审计加固批次**。本地手工审计 + 后台独立 agent(并发、DX 两个角度)交叉验证,**共发现 15 个真问题**,分布在 P0/P1/P2 三档,5 个 commit 修复完成,版本从 0.1.0 跃升到 **0.3.0**。
 >
 > **P0 真问题(静默 correctness)**:
