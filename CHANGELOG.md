@@ -5,6 +5,75 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-07-15
+
+### Hardening, documentation, and config wiring
+
+A patch release picking up the hardening work that landed between v0.5.0
+tag and the next planned feature release. No breaking changes — all
+modifications are additive or document existing behaviour.
+
+### Security
+
+- `Memory.to_json` / `Memory.from_json` now round-trip `embedding` and
+  `relations`. The previous implementation silently dropped both, which
+  broke backup/restore vector search AND cascade-forget in-edge discovery
+  after restore. (Same fix already shipped in v0.5.0 commit `e6998e6` —
+  re-documented here under the unified 0.5.1 banner.)
+- `uams.utils.embedding_serde.deserialize_embedding` no longer falls
+  back to `pickle.loads`. Legacy pickle-encoded blobs are rejected
+  with an ERROR log and treated as `None`. This closes an RCE vector:
+  an attacker who could write to a shared store would previously get
+  arbitrary Python execution on the next `retrieve()`.
+- `uams.utils.security.RateLimiter` is now thread-safe. Added an
+  internal `threading.Lock`; the check-then-append path no longer
+  leaks under concurrent load. A regression test under 8 threads × 100
+  calls verifies exactly the configured `max_requests` pass.
+- `InputValidator.sanitize_sql` removed; replaced by
+  `InputValidator.is_safe_identifier(value)` (whitelist grammar). The
+  keyword-denylist approach was an anti-pattern.
+- `UAMSConfig.validate()` now rejects unsafe identifiers / paths
+  before any DDL / Redis-key / log-file operation runs:
+  `postgresql_table`, `redis_key_prefix`, `redis_cache_key_prefix`,
+  `cascade_audit_log_path`, `cascade_orphan_log_path`,
+  `cascade_max_depth`, `cascade_in_edge_strategy`.
+
+### Fixed
+
+- `UAMS_HISTOGRAM_MAX_ENTRIES` env var now flows through. Previously
+  parsed by `UAMSConfig.from_env()` but silently ignored —
+  `HealthServer` always built `MetricsCollector` with the hard-coded
+  default of 10000. `HealthServer.__init__` now accepts
+  `histogram_max_entries` and `docker_entrypoint.py` forwards the
+  config value. Operators tuning this env var now see effect.
+- `delete_by_project_id` docstring cleaned up — replaced the prior
+  rambling "Wait, that's wrong" working notes with a clear two-section
+  description of single-pass vs two-pass behaviour, including the
+  `list_all(limit=10000)` upper-bound for tenant_id callers.
+
+### Documentation
+
+- New `docs/VAULT_MIGRATION.md` — migration guide for Vault-side
+  consumers moving from v0.3.x monkey-patches to v0.4.0/v0.5.0 public
+  APIs. Documents 8 vault-side anti-patterns (peeking `_session_events`,
+  `try/except TypeError` around `get_stats(scan_limit=...)`, O(N)
+  `list_all(10000)` scans for project deletion, project-level
+  `forget()` loops, `with vault_lock: rl.is_allowed(key)`,
+  embedding-after-restore null check, missing `tenant_id`, and
+  `sanitize_sql` calls) and their replacements.
+- New `docs/CONFIG_REFERENCE.md` — source of truth for which
+  `UAMSConfig` keys actually take effect. Tier 1 (read), Tier 2
+  (caveats), Tier 3 (declared-but-unused, e.g. `enable_audit_log`,
+  `audit_log_path`, `max_session_events`,
+  `privacy_redaction_enabled`, `enable_metrics`,
+  `llm_temperature`, `llm_max_tokens`, `max_agent_id_length`,
+  `max_user_id_length`, `*_use_tls`, `connection_timeout_seconds`).
+  Tier 4 (removed: `sanitize_sql`). A future release may wire
+  Tier 3; this doc tells operators honestly that setting them today
+  has no effect.
+
+Local: 488 tests / 0 errors / 3 pre-existing failures (unchanged).
+
 ## [0.5.0] - 2026-07-15
 
 ### Security Hardening (closing real attack surfaces)
