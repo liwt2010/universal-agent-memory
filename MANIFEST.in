@@ -6,6 +6,7 @@ include CODE_OF_CONDUCT.md
 include SECURITY.md
 include pyproject.toml
 recursive-include src *.py
+include src/uams/py.typed
 recursive-include tests *.py
 recursive-include examples *.py
 recursive-include docs *.md
