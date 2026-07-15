@@ -34,11 +34,18 @@ class RetrievalPipeline:
         rrf_k: int = 60,
         token_estimator: Any | None = None,
         query_rewriter: QueryRewriter | None = None,
+        max_results_per_session: int = 3,
     ):
         self._stores = stores
         self._rrf_k = rrf_k
         self._token_estimator = token_estimator
         self._query_rewriter = query_rewriter
+        # Cap on how many memories from a single session can appear in
+        # the final result. Prevents a chatty session from drowning out
+        # results from other sessions. Configurable via constructor
+        # (UAMSConfig.max_results_per_session flows through from
+        # UniversalMemorySystem).
+        self._max_per_session = max(1, int(max_results_per_session))
 
     def retrieve(
         self,
@@ -116,7 +123,7 @@ class RetrievalPipeline:
         for mid in sorted_ids:
             mem = memory_map[mid]
             sid = mem.context.session_id
-            if session_counts[sid] >= 3:
+            if session_counts[sid] >= self._max_per_session:
                 continue
             session_counts[sid] += 1
             mem.retrieval_score = rrf_scores[mid]

@@ -114,6 +114,7 @@ class UniversalMemorySystem(EventHandler):
             rrf_k=self._config.rrf_k,
             token_estimator=get_default_estimator(),
             query_rewriter=self._build_query_rewriter(),
+            max_results_per_session=self._config.max_results_per_session,
         )
         self._forgetting = ForgettingEngine(self._stores)
         self._cascade_audit = CascadeAuditWriter(
@@ -177,6 +178,8 @@ class UniversalMemorySystem(EventHandler):
                 max_events_per_call=self._config.llm_compression_max_events,
                 target_ratio=self._config.llm_compression_target_ratio,
                 timeout=self._config.llm_timeout_seconds,
+                max_tokens=self._config.llm_max_tokens,
+                temperature=self._config.llm_temperature,
             )
             logger.info(
                 "LLM compression engine enabled | provider=%s model=%s base_url=%s",
@@ -278,6 +281,8 @@ class UniversalMemorySystem(EventHandler):
                 max_variants=self._config.query_rewrite_max_variants,
                 timeout=self._config.query_rewrite_timeout_seconds,
                 cache_max_entries=self._config.query_rewrite_cache_max_entries,
+                max_tokens=self._config.llm_max_tokens,
+                temperature=self._config.llm_temperature,
             )
         except Exception:
             logger.exception(
@@ -484,19 +489,50 @@ class UniversalMemorySystem(EventHandler):
         This is the primary ingestion primitive.
         Error handling: if any step fails, event is still published to bus.
         """
+        # 0. Enforce max_agent_id_length / max_user_id_length caps from
+        # config. Truncate + warn rather than raise so a too-long ID
+        # does not block ingestion; downstream filters (delete_by_filter
+        # etc.) are keyed on these strings and would silently miss on
+        # mismatch.
+        ctx = event.agent_context
+        if ctx.agent_id and len(ctx.agent_id) > self._config.max_agent_id_length:
+            logger.warning(
+                "agent_id length %d exceeds max_agent_id_length=%d; truncating",
+                len(ctx.agent_id), self._config.max_agent_id_length,
+            )
+            ctx.agent_id = ctx.agent_id[: self._config.max_agent_id_length]
+        if ctx.user_id and len(ctx.user_id) > self._config.max_user_id_length:
+            logger.warning(
+                "user_id length %d exceeds max_user_id_length=%d; truncating",
+                len(ctx.user_id), self._config.max_user_id_length,
+            )
+            ctx.user_id = ctx.user_id[: self._config.max_user_id_length]
+
         # 1. Publish to event bus (notifies all subscribers)
         try:
             self._bus.publish(event)
         except Exception:
             logger.exception("EventBus publish failed for event %s. Continuing.", event.event_id)
 
-        # 2. Track for session consolidation (with lock)
+        # 2. Track for session consolidation (with lock). Enforce
+        # ``max_session_events`` cap so a runaway event source can't
+        # blow up memory: oldest events are dropped on overflow.
         try:
             with self._session_lock:
                 sid = event.agent_context.session_id
                 if sid not in self._session_events:
                     self._session_events[sid] = []
-                self._session_events[sid].append(event)
+                events = self._session_events[sid]
+                events.append(event)
+                cap = self._config.max_session_events
+                if cap > 0 and len(events) > cap:
+                    dropped = len(events) - cap
+                    del events[:dropped]
+                    logger.warning(
+                        "Session %s exceeded max_session_events cap (%d); "
+                        "dropped %d oldest events",
+                        sid, cap, dropped,
+                    )
         except Exception:
             logger.exception("Session tracking failed for %s", event.agent_context.session_id)
             return  # Can't proceed without session tracking

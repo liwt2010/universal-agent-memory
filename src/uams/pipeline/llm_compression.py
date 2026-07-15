@@ -78,11 +78,15 @@ class LLMCompressionEngine(CompressionEngine):
         target_ratio: float = 0.3,
         timeout: float = 30.0,
         hierarchical_filter: HierarchicalFilter | None = None,
+        max_tokens: int = 512,
+        temperature: float = 0.0,
     ):
         self._llm = llm_client
         self._max_events = max(1, int(max_events_per_call))
         self._target_ratio = float(target_ratio)
         self._timeout = float(timeout)
+        self._max_tokens = max(1, int(max_tokens))
+        self._temperature = float(temperature)
         self._hfilter = hierarchical_filter or HierarchicalFilter()
 
     # --- Episodic: events -> narrative Memory ---
@@ -167,8 +171,8 @@ class LLMCompressionEngine(CompressionEngine):
                     {"role": "system", "content": _EPISODIC_SYSTEM},
                     {"role": "user", "content": user_msg},
                 ],
-                max_tokens=512,
-                temperature=0.0,
+                max_tokens=self._max_tokens,
+                temperature=self._temperature,
                 timeout=self._timeout,
             ).strip()
         except Exception:
@@ -186,8 +190,8 @@ class LLMCompressionEngine(CompressionEngine):
                     {"role": "system", "content": _SEMANTIC_SYSTEM},
                     {"role": "user", "content": episodic.payload.raw},
                 ],
-                max_tokens=512,
-                temperature=0.0,
+                max_tokens=self._max_tokens,
+                temperature=self._temperature,
                 timeout=self._timeout,
             ).strip()
             facts_json = self._parse_json_array(raw)
@@ -234,8 +238,8 @@ class LLMCompressionEngine(CompressionEngine):
                     {"role": "system", "content": _PROCEDURAL_SYSTEM},
                     {"role": "user", "content": joined},
                 ],
-                max_tokens=512,
-                temperature=0.0,
+                max_tokens=self._max_tokens,
+                temperature=self._temperature,
                 timeout=self._timeout,
             ).strip()
             patterns = self._parse_json_array(raw)

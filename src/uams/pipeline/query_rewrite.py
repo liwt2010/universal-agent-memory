@@ -57,11 +57,15 @@ class QueryRewriter:
         max_variants: int = 4,
         timeout: float = 5.0,
         cache_max_entries: int = 1000,
+        max_tokens: int = 128,
+        temperature: float = 0.0,
     ):
         self._llm = llm_client or NullLLMClient()
         self._max_variants = max(1, min(8, int(max_variants)))
         self._timeout = float(timeout)
         self._cache_max = max(1, int(cache_max_entries))
+        self._max_tokens = max(1, int(max_tokens))
+        self._temperature = float(temperature)
         self._cache: dict = {}
         self._lock = threading.RLock()
 
@@ -118,8 +122,8 @@ class QueryRewriter:
                     {"role": "system", "content": _REWRITE_SYSTEM},
                     {"role": "user", "content": _REWRITE_USER_TEMPLATE.format(query=query)},
                 ],
-                max_tokens=128,
-                temperature=0.0,
+                max_tokens=self._max_tokens,
+                temperature=self._temperature,
                 timeout=self._timeout,
             )
         except Exception:
