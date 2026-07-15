@@ -200,6 +200,84 @@ class TestUAMSConfigProductionSafety(unittest.TestCase):
         self.assertTrue(any("neo4j" in m for m in cm.output))
 
 
+class TestUAMSConfigIdentifierSafety(unittest.TestCase):
+    """postgresql_table and redis_key_prefix are interpolated into raw DDL /
+    keyspace strings, so they must be safe identifiers — never user input.
+
+    Pre-fix, an attacker who could set UAMS_POSTGRESQL_TABLE (e.g. via env
+    variable injection in a multi-tenant control plane) could smuggle a
+    DROP TABLE into the schema migration. These tests pin the safe-
+    identifier check."""
+
+    def _try_validate(self, **overrides) -> "UAMSConfig":
+        cfg = UAMSConfig(**overrides)
+        try:
+            cfg.validate()
+        except ValueError:
+            return None  # raised; caller inspects
+        return cfg
+
+    def test_postgresql_table_with_ddl_injection_rejected(self):
+        cfg = self._try_validate(postgresql_table="uams; DROP TABLE x; --")
+        assert cfg is None, "postgresql_table with SQL injection must reject"
+
+    def test_postgresql_table_with_spaces_rejected(self):
+        cfg = self._try_validate(postgresql_table="my table")
+        assert cfg is None
+
+    def test_postgresql_table_with_dot_rejected(self):
+        cfg = self._try_validate(postgresql_table="schema.table")
+        assert cfg is None
+
+    def test_postgresql_table_valid_id_accepted(self):
+        cfg = self._try_validate(postgresql_table="uams_memories_abc123")
+        assert cfg is not None, "valid identifier should pass"
+
+    def test_redis_key_prefix_with_shell_meta_rejected(self):
+        cfg = self._try_validate(redis_key_prefix="uams:|; rm -rf /")
+        assert cfg is None
+
+
+class TestUAMSConfigAuditLogPathSafety(unittest.TestCase):
+    """Audit log paths reach open() — reject shell-meta characters."""
+
+    def test_path_with_semicolon_rejected(self):
+        cfg = UAMSConfig(cascade_audit_log_path="logs/x; touch /tmp/pwn")
+        with self.assertRaises(ValueError):
+            cfg.validate()
+
+    def test_path_with_pipe_rejected(self):
+        cfg = UAMSConfig(cascade_audit_log_path="logs/x | cat /etc/passwd")
+        with self.assertRaises(ValueError):
+            cfg.validate()
+
+    def test_path_with_nul_rejected(self):
+        cfg = UAMSConfig(cascade_audit_log_path="logs/x\x00.log")
+        with self.assertRaises(ValueError):
+            cfg.validate()
+
+    def test_normal_path_passes(self):
+        UAMSConfig(cascade_audit_log_path="logs/cascade_forget_audit.jsonl").validate()
+
+
+class TestUAMSConfigCascadeBounds(unittest.TestCase):
+    """cascade_max_depth is bounded to prevent accidental deep-graph traversals."""
+
+    def test_depth_zero_accepted(self):
+        UAMSConfig(cascade_max_depth=0).validate()
+
+    def test_depth_eight_accepted(self):
+        UAMSConfig(cascade_max_depth=8).validate()
+
+    def test_depth_nine_rejected(self):
+        with self.assertRaises(ValueError):
+            UAMSConfig(cascade_max_depth=9).validate()
+
+    def test_depth_negative_rejected(self):
+        with self.assertRaises(ValueError):
+            UAMSConfig(cascade_max_depth=-1).validate()
+
+
 class TestUAMSConfigFromEnv(unittest.TestCase):
     """from_env() reads the new env vars correctly."""
 

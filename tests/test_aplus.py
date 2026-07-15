@@ -5,13 +5,14 @@ Note: PostgreSQL tests use mock (no real PostgreSQL server required).
 
 import sys
 import os
+import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from uams.config import UAMSConfig
-from uams.utils.security import InputValidator, RateLimiter
+from uams.utils.security import InputValidator
 from uams.utils.backup import BackupManager, MigrationTool
 from uams.utils.retry import with_retry, RetryConfig, retry_call, global_retry_stats
 from uams import (
@@ -70,14 +71,13 @@ class TestUAMSConfigValidation(unittest.TestCase):
 
 
 class TestInputValidator(unittest.TestCase):
-    """Security input validation tests."""
+    """Input validator tests.
 
-    def test_sql_injection_sanitized(self):
-        malicious = "user' OR '1'='1'; DROP TABLE users; --"
-        result = InputValidator.sanitize_sql(malicious)
-        self.assertNotIn("DROP", result)
-        self.assertNotIn(";", result)
-        self.assertNotIn("OR", result)
+    Note: ``sanitize_sql`` was deliberately removed in v0.4.1 — keyword
+    denylists are an anti-pattern (all UAMS backends use parameterised
+    queries). Tests that exercised it have been replaced with tests
+    for ``is_safe_identifier`` and the remaining HTML-escape path.
+    """
 
     def test_xss_prevention(self):
         malicious = '<script>alert("xss")</script>'
@@ -90,38 +90,87 @@ class TestInputValidator(unittest.TestCase):
         result = InputValidator.sanitize_all(text, max_length=100)
         self.assertLessEqual(len(result), 100)  # Length <= 100 after truncation
         self.assertNotIn("<script>", result)  # XSS removed
-        # Note: after HTML escape, ';' may appear in entities like &lt; but not as SQL injection
 
     def test_empty_input(self):
-        self.assertEqual(InputValidator.sanitize_sql(""), "")
         self.assertEqual(InputValidator.sanitize_html(""), "")
 
+    def test_is_safe_identifier_accepts_alnum(self):
+        for s in ["abc", "ABC123", "tenant-abc-123", "x_y_z", "a-b-c-1-2"]:
+            self.assertTrue(InputValidator.is_safe_identifier(s),
+                            f"should accept {s!r}")
 
-class TestRateLimiter(unittest.TestCase):
-    """Rate limiting tests."""
+    def test_is_safe_identifier_rejects_unsafe(self):
+        for s in ["", "abc;DROP TABLE x", "abc def", "abc/def", "abc.def",
+                  "abc'; --", "abc\nxyz", "abc\x00null", None]:
+            self.assertFalse(InputValidator.is_safe_identifier(s),
+                             f"should reject {s!r}")
 
-    def test_rate_limit_allows_within_limit(self):
-        limiter = RateLimiter(max_requests=5, window_seconds=60.0)
-        for _ in range(5):
-            self.assertTrue(limiter.is_allowed("key1"))
+    def test_is_safe_identifier_enforces_length(self):
+        # At the limit it still passes; just over, it fails.
+        self.assertTrue(InputValidator.is_safe_identifier("a" * 256))
+        self.assertFalse(InputValidator.is_safe_identifier("a" * 257))
 
-    def test_rate_limit_blocks_excess(self):
-        limiter = RateLimiter(max_requests=3, window_seconds=60.0)
-        for _ in range(3):
-            limiter.is_allowed("key2")
-        self.assertFalse(limiter.is_allowed("key2"))
+    def test_rate_limiter_class_basic(self):
+        """RateLimiter must still be importable and respect the limit."""
+        from uams.utils.security import RateLimiter
+        rl = RateLimiter(max_requests=3, window_seconds=60.0)
+        self.assertTrue(rl.is_allowed("k"))
+        self.assertTrue(rl.is_allowed("k"))
+        self.assertTrue(rl.is_allowed("k"))
+        # 4th call in the window must be denied.
+        self.assertFalse(rl.is_allowed("k"))
 
-    def test_rate_limit_different_keys_independent(self):
-        limiter = RateLimiter(max_requests=1, window_seconds=60.0)
-        self.assertTrue(limiter.is_allowed("key_a"))
-        self.assertTrue(limiter.is_allowed("key_b"))
+    def test_rate_limiter_back_compat_factory(self):
+        """Pre-v0.4.x callers used ``InputValidator.rate_limiter(...)`` —
+        the factory must still return a working RateLimiter."""
+        from uams.utils.security import RateLimiter
+        rl = InputValidator.rate_limiter(max_requests=2, window_seconds=60.0)
+        self.assertIsInstance(rl, RateLimiter)
+        self.assertTrue(rl.is_allowed("k"))
+        self.assertTrue(rl.is_allowed("k"))
+        self.assertFalse(rl.is_allowed("k"))
 
-    def test_reset(self):
-        limiter = RateLimiter(max_requests=1, window_seconds=60.0)
-        limiter.is_allowed("key3")
-        self.assertFalse(limiter.is_allowed("key3"))
-        limiter.reset("key3")
-        self.assertTrue(limiter.is_allowed("key3"))
+    def test_rate_limiter_thread_safety(self):
+        """Concurrent calls under a tight limit must not exceed
+        max_requests. Without the lock this is the P2 #13 race that
+        lets through more than the configured number."""
+        from uams.utils.security import RateLimiter
+        rl = RateLimiter(max_requests=50, window_seconds=60.0)
+        results = []
+
+        def hammer():
+            for _ in range(100):
+                results.append(rl.is_allowed("shared-key"))
+
+        threads = [threading.Thread(target=hammer) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        # Exactly 50 allowed (limit), 8*100-50 = 750 denied.
+        self.assertEqual(sum(1 for r in results if r), 50)
+        self.assertEqual(sum(1 for r in results if not r), 750)
+
+    def test_rate_limiter_reset(self):
+        from uams.utils.security import RateLimiter
+        rl = RateLimiter(max_requests=1, window_seconds=60.0)
+        self.assertTrue(rl.is_allowed("k"))
+        self.assertFalse(rl.is_allowed("k"))
+        rl.reset("k")
+        self.assertTrue(rl.is_allowed("k"))
+
+
+class TestIsSafeIdentifierUsage(unittest.TestCase):
+    """The is_safe_identifier check is used to validate IDs before they
+    are interpolated into PG table names or Redis key prefixes. These
+    tests pin the boundary semantics."""
+
+    def test_table_name_injection_blocked(self):
+        """A tenant_id of "abc; DROP TABLE x; --" must be rejected
+        before it reaches the PG DDL or schema migrations."""
+        from uams.utils.security import InputValidator
+        evil = "abc; DROP TABLE uams_memories; --"
+        self.assertFalse(InputValidator.is_safe_identifier(evil))
 
 
 class TestBackupManager(unittest.TestCase):

@@ -44,18 +44,32 @@ class TestDeserializeEmbedding(unittest.TestCase):
         blob = serialize_embedding(vec)
         self.assertEqual(deserialize_embedding(blob), vec)
 
-    def test_legacy_pickle_blob_with_marker(self):
-        """Pickle protocol header 0x80 — should fall back to pickle."""
-        vec = [0.5, -0.5, 1.0]
-        legacy_blob = pickle.dumps(vec)
-        # Sanity: legacy blob starts with pickle marker
+    def test_legacy_pickle_blob_rejected_as_rce_protection(self):
+        """Pickle blobs are now REFUSED, not deserialized.
+
+        Previously the code fell back to pickle.loads when JSON decode
+        failed, which was a remote-code-execution vector if an attacker
+        could write to the backing store. The fix (v0.4.1 hardening)
+        rejects all pickle blobs and logs an ERROR; operators must run
+        the migration script in the embedding_serde module docstring
+        before deploying this version.
+
+        This test pins the new fail-secure behaviour so the pickle
+        fallback cannot be silently re-introduced.
+        """
+        legacy_blob = pickle.dumps([0.5, -0.5, 1.0])
+        # Sanity: legacy blob does start with the pickle marker.
         self.assertEqual(legacy_blob[:1], b"\x80")
-        # deserialize_embedding should handle it (with logged warning)
+        # The new behaviour: pickle blobs are refused, not executed.
         result = deserialize_embedding(legacy_blob)
-        self.assertEqual(result, vec)
+        self.assertIsNone(
+            result,
+            "deserialize_embedding must NOT execute pickle.loads on "
+            "an attacker-controllable blob (RCE prevention).",
+        )
 
     def test_corrupt_blob_returns_none(self):
-        """A blob that is neither valid JSON nor valid pickle returns None."""
+        """A blob that is neither valid JSON nor a pickle marker returns None."""
         result = deserialize_embedding(b"this is not json or pickle")
         # json.loads fails (JSONDecodeError); pickle.loads fails (UnpicklingError)
         # Should log and return None

@@ -390,6 +390,49 @@ class UAMSConfig:
                 f"got {self.environment!r}"
             )
 
+        # --- Identifier safety ---
+        # The postgresql_table name is interpolated into raw DDL (CREATE
+        # TABLE), so it MUST be a safe identifier — never user input.
+        # Reject anything outside [A-Za-z0-9_-] before any DDL runs.
+        import re as _re
+        if self.postgresql_table and not _re.fullmatch(
+            r"[A-Za-z0-9_\-]+", self.postgresql_table
+        ):
+            errors.append(
+                f"postgresql_table must match [A-Za-z0-9_-]+ "
+                f"(got {self.postgresql_table!r}); "
+                "this field is interpolated into DDL, never pass user input"
+            )
+
+        # The Redis key prefix is also interpolated into raw keys — same
+        # safety net.
+        if self.redis_key_prefix and not _re.fullmatch(
+            r"[A-Za-z0-9_\-:]+", self.redis_key_prefix
+        ):
+            errors.append(
+                f"redis_key_prefix must match [A-Za-z0-9_:-]+ "
+                f"(got {self.redis_key_prefix!r})"
+            )
+        if self.redis_cache_key_prefix and not _re.fullmatch(
+            r"[A-Za-z0-9_\-:]+", self.redis_cache_key_prefix
+        ):
+            errors.append(
+                f"redis_cache_key_prefix must match [A-Za-z0-9_:-]+ "
+                f"(got {self.redis_cache_key_prefix!r})"
+            )
+
+        # --- Audit log paths ---
+        # Paths end up at the OS layer (open() with whatever mode the
+        # caller passes). Reject path-traversal tokens and shell-meta
+        # characters before any fs call happens.
+        for path_attr in ("cascade_audit_log_path", "cascade_orphan_log_path"):
+            path_val = getattr(self, path_attr)
+            if path_val and ("\x00" in path_val or "|" in path_val or ";" in path_val):
+                errors.append(
+                    f"{path_attr} contains shell-meta or NUL characters "
+                    f"(got {path_val!r}); refusing to open"
+                )
+
         # --- Basic bounds ---
         if self.event_bus_max_buffer < 1:
             errors.append("event_bus_max_buffer must be >= 1")
@@ -563,6 +606,21 @@ class UAMSConfig:
                         "UAMSConfig staging-mode warnings: %s",
                         "; ".join(production_errors),
                     )
+
+        # --- Cascade delete bounds ---
+        # depth=0 = "delete target only", depth=4 = "walk 4 hops", depth=20 =
+        # accidentally letting one delete traverse 20 tiers. Cap at 8 to
+        # bound cascade cost while still allowing practical use cases.
+        if self.cascade_max_depth < 0 or self.cascade_max_depth > 8:
+            errors.append(
+                f"cascade_max_depth must be between 0 and 8 "
+                f"(got {self.cascade_max_depth})"
+            )
+        if self.cascade_in_edge_strategy not in ("scan", "index", "auto"):
+            errors.append(
+                f"cascade_in_edge_strategy must be scan|index|auto "
+                f"(got {self.cascade_in_edge_strategy!r})"
+            )
 
         if errors:
             raise ValueError(f"Configuration validation failed: {'; '.join(errors)}")

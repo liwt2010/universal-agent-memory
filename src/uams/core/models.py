@@ -64,6 +64,7 @@ class AgentContext:
     user_id: Optional[str] = None
     team_id: Optional[str] = None
     project_id: Optional[str] = None
+    tenant_id: Optional[str] = None  # NEW: multi-tenant isolation boundary (cloud)
 
     def namespace(self) -> str:
         """Return a unique namespace for this memory owner."""
@@ -149,7 +150,13 @@ class Memory:
         self.last_access_count += 1
 
     def to_json(self) -> Dict[str, Any]:
-        """Serialize to JSON-compatible dict."""
+        """Serialize to JSON-compatible dict.
+
+        Includes ``embedding`` (payload) and ``relations`` (metadata) so
+        ``BackupManager.backup_to_file`` / ``restore_from_file`` roundtrip
+        is lossless. The previous implementation omitted both fields,
+        silently breaking vector search and cascade-forget after restore.
+        """
         return {
             "id": str(self.id),
             "anchor": {
@@ -165,10 +172,14 @@ class Memory:
                 "user_id": self.context.user_id,
                 "team_id": self.context.team_id,
                 "project_id": self.context.project_id,
+                "tenant_id": self.context.tenant_id,
             },
             "payload": {
                 "raw": self.payload.raw,
                 "structured": self.payload.structured,
+                # embedding is included so backup/restore preserves vector
+                # search capability. None is serialized as JSON null.
+                "embedding": self.payload.embedding,
             },
             "metadata": {
                 "memory_type": self.metadata.memory_type.name,
@@ -178,13 +189,33 @@ class Memory:
                 "source_event": self.metadata.source_event.name if self.metadata.source_event else None,
                 "tags": list(self.metadata.tags),
                 "categories": list(self.metadata.categories),
+                # relations are required for cascade forget to discover
+                # in-edges after a backup is restored. The previous omission
+                # caused restore-from-file to silently drop the knowledge
+                # graph, breaking GDPR Article 17 delete-by-id traversal.
+                "relations": [
+                    {
+                        "type": r.relation_type,
+                        "target": r.target_memory_id,
+                        "bidirectional": r.bidirectional,
+                        "strength": r.strength,
+                    }
+                    for r in self.metadata.relations
+                ],
                 "provenance": self.metadata.provenance,
             },
         }
 
     @classmethod
     def from_json(cls, data: Dict[str, Any]) -> Memory:
-        """Deserialize from JSON-compatible dict."""
+        """Deserialize from JSON-compatible dict.
+
+        Reads ``embedding`` (payload) and ``relations`` (metadata) so the
+        roundtrip is lossless. Missing keys default to ``None`` / empty
+        list to stay backward compatible with backups written before
+        v0.4.x.
+        """
+        meta = data.get("metadata", {})
         return cls(
             id=MemoryId(data["id"]),
             anchor=TemporalAnchor(
@@ -200,20 +231,33 @@ class Memory:
                 user_id=data["context"].get("user_id"),
                 team_id=data["context"].get("team_id"),
                 project_id=data["context"].get("project_id"),
+                tenant_id=data["context"].get("tenant_id"),
             ),
             payload=MemoryPayload(
                 raw=data["payload"]["raw"],
                 structured=data["payload"].get("structured"),
+                # embedding defaults to None if missing (older backups).
+                embedding=data["payload"].get("embedding"),
             ),
             metadata=MemoryMetadata(
-                memory_type=MemoryType[data["metadata"]["memory_type"]],
-                privacy=PrivacyLevel[data["metadata"]["privacy"]],
-                importance=data["metadata"]["importance"],
-                confidence=data["metadata"]["confidence"],
-                source_event=EventType[data["metadata"]["source_event"]] if data["metadata"].get("source_event") else None,
-                tags=set(data["metadata"].get("tags", [])),
-                categories=set(data["metadata"].get("categories", [])),
-                provenance=data["metadata"].get("provenance", []),
+                memory_type=MemoryType[meta["memory_type"]],
+                privacy=PrivacyLevel[meta["privacy"]],
+                importance=meta["importance"],
+                confidence=meta["confidence"],
+                source_event=EventType[meta["source_event"]] if meta.get("source_event") else None,
+                tags=set(meta.get("tags", [])),
+                categories=set(meta.get("categories", [])),
+                # relations default to [] if missing (older backups).
+                relations=[
+                    Relation(
+                        r["type"],
+                        r["target"],
+                        bidirectional=r.get("bidirectional", False),
+                        strength=r.get("strength", 1.0),
+                    )
+                    for r in meta.get("relations", [])
+                ],
+                provenance=meta.get("provenance", []),
             ),
         )
 
