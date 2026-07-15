@@ -8,7 +8,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 # Ensure `src/` is on sys.path so `import uams.*` works without an editable install.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -88,7 +88,7 @@ class _InMemStore(MemoryStore):
     """In-memory store that satisfies MemoryStore. Per-instance tier label."""
     def __init__(self, tier: MemoryType):
         self._tier = tier
-        self._mem: Dict[str, Memory] = {}
+        self._mem: dict[str, Memory] = {}
 
     @property
     def tier(self) -> MemoryType:
@@ -97,7 +97,7 @@ class _InMemStore(MemoryStore):
     def store(self, memory: Memory) -> None:
         self._mem[str(memory.id)] = memory
 
-    def retrieve(self, memory_id: str) -> Optional[Memory]:
+    def retrieve(self, memory_id: str) -> Memory | None:
         return self._mem.get(memory_id)
 
     def delete(self, memory_id: str) -> bool:
@@ -106,22 +106,22 @@ class _InMemStore(MemoryStore):
             return True
         return False
 
-    def search_keywords(self, query: str, k: int = 10) -> List[Memory]:
+    def search_keywords(self, query: str, k: int = 10) -> list[Memory]:
         return [m for m in self._mem.values() if query.lower() in m.payload.raw.lower()][:k]
 
-    def search_vector(self, vector, k: int = 10, **filters) -> List[Memory]:
+    def search_vector(self, vector, k: int = 10, **filters) -> list[Memory]:
         return list(self._mem.values())[:k]
 
-    def search_graph(self, entity: str, depth: int = 2) -> List[Memory]:
+    def search_graph(self, entity: str, depth: int = 2) -> list[Memory]:
         return []
 
-    def list_all(self, limit: int = 100) -> List[Memory]:
+    def list_all(self, limit: int = 100) -> list[Memory]:
         return list(self._mem.values())[:limit]
 
     def delete_expired(self) -> int:
         return 0
 
-    def get(self, mid: str) -> Optional[Memory]:
+    def get(self, mid: str) -> Memory | None:
         return self._mem.get(mid)
 
     def close(self) -> None:

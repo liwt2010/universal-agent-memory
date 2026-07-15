@@ -8,7 +8,6 @@ batch behavior, and config validation rules.
 import os
 import sys
 import unittest
-from typing import List
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -35,7 +34,7 @@ class FakeEmbeddingProvider(EmbeddingProvider):
         self.call_count = 0
         self.batch_call_count = 0
 
-    def embed(self, text: str) -> List[float]:
+    def embed(self, text: str) -> list[float]:
         self.call_count += 1
         if self._fail:
             raise RuntimeError("fake provider failure")
