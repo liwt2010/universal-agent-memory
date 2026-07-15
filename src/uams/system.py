@@ -778,21 +778,24 @@ class UniversalMemorySystem(EventHandler):
     ) -> int:
         """Delete all memories whose ``context.project_id`` matches.
 
-        If ``tenant_id`` is given, the filter is ``project_id AND
-        tenant_id``; otherwise the filter is ``project_id`` alone.
-        Returns the count deleted (0 if no matches).
+        If ``tenant_id`` is given, only memories matching BOTH
+        ``project_id`` AND ``tenant_id`` are deleted; otherwise the
+        filter is ``project_id`` alone. Returns the count deleted
+        (0 if no matches).
 
-        Implementation: when ``tenant_id`` is set, deletes happen in
-        two passes — first delete by project_id, then walk the
-        remaining project_id-matching survivors (already a small set)
-        and re-insert any with mismatched tenant_id. Wait, that's
-        wrong — we *don't* want to re-insert. So we instead do it in
-        reverse: list survivors of project_id, manually delete the
-        ones whose tenant_id matches.
-
-        Per-tier implementation: ``MemoryStore.delete_by_filter``
-        invoked twice (once for project_id match, then for tenant_id
-        match in the narrowed set) when ``tenant_id`` is set.
+        Per-tier implementation:
+          - Without ``tenant_id``: a single
+            ``MemoryStore.delete_by_filter("project_id", project_id)``
+            call per tier. O(matches) on every backend.
+          - With ``tenant_id``: a two-pass approach is required
+            because the storage layer's ``delete_by_filter`` only
+            takes one equality predicate. We first list the (already
+            small) ``project_id`` survivors, then delete those whose
+            ``tenant_id`` matches. The list_all cap of 10000 is the
+            upper bound on the survivors we will inspect per call —
+            callers with more than 10000 matches under a single
+            project should pass ``tenant_id=None`` (single equality)
+            or accept a partial count.
         """
         deleted = 0
         if tenant_id is None:
