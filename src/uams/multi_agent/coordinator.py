@@ -11,7 +11,7 @@ import uuid
 from collections import defaultdict
 
 from uams.core.enums import PrivacyLevel
-from uams.core.models import Memory, MemoryId, MemoryPayload, MemoryMetadata, TemporalAnchor, AgentContext
+from uams.core.models import Memory
 from uams.storage.base import MemoryStore
 from uams.utils.logging import get_logger
 

@@ -33,7 +33,7 @@ from uams.embedding.base import EmbeddingFn
 from uams.config import UAMSConfig
 from uams.utils.logging import get_logger, configure_logging
 from uams.utils.security import InputValidator
-from uams.utils.tokens import TokenEstimator, get_default_estimator
+from uams.utils.tokens import get_default_estimator
 from uams.utils.cascade_audit import CascadeAuditWriter
 from uams.pipeline.cascade import (
     CascadeForgetter,

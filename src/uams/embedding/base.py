@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Callable
 
-from uams.core.models import MemoryPayload
-
 
 class EmbeddingProvider:
     """
