@@ -5,6 +5,59 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-07-15
+
+### Modernized type annotations
+
+A pure-types patch release: zero runtime change, but the public API is now
+PEP 585 (built-in generics) and PEP 604 (union syntax) compliant, and the
+package ships a `py.typed` marker so downstream type-checkers work out of
+the box.
+
+- **PEP 585**: `List[X]` → `list[X]`, `Dict[K, V]` → `dict[K, V]`,
+  `Tuple[…]` → `tuple[…]`, `Set[X]` → `set[X]` across all 32 affected
+  modules in `src/uams/`.
+- **PEP 604**: `Optional[X]` → `X | None`, `Union[A, B]` → `A | B`
+  across 29 modules. Every migration site sits under
+  `from __future__ import annotations`, so the rewrite is forward
+  reference-safe on Python 3.9+ without `from __future__` workarounds.
+- **`typing.Deque`, `typing.Protocol`, `typing.Type`, `typing.Callable`,
+  `typing.Iterable`, `typing.Any`, `typing.Literal`** remain imported
+  from `typing` per file as needed (no PEP 585/604 equivalents in the
+  current grammar that read cleanly on 3.9).
+- **`src/uams/py.typed`** added per PEP 561; declared in
+  `pyproject.toml` `[tool.setuptools.package-data]` and `MANIFEST.in`.
+  Downstream `mypy` / `pyright` users get real type checking on
+  `uams.*` without needing a stubs package.
+- **Tests in scope updated**: `tests/test_cascade.py` and
+  `tests/test_embedding.py` had their internal `Dict`/`List`/`Optional`
+  typing imports flipped to PEP 585/604 in lockstep.
+
+### CI — mypy promoted to a real PR gate
+
+- `.github/workflows/ci.yml` step `mypy src/ --ignore-missing-imports || true`
+  no longer silences failures. A new typing regression now breaks PR CI.
+- `[tool.mypy]` in `pyproject.toml` gained:
+  `disallow_untyped_defs = true`, `no_implicit_optional = true`,
+  `warn_redundant_casts = true`, `warn_unused_ignores = true`. The
+  pre-existing `python_version = "3.9"`, `warn_return_any = true`,
+  `warn_unused_configs = true` were kept. `ignore_missing_imports`
+  moved from the CLI flag to config so the CI line is just `mypy src/`.
+- `strict = true` is **not** yet enabled — ~252 functions still lack
+  return type annotations, and that work is tracked in a follow-up PR.
+
+### Compatibility notes
+
+- No runtime behavior change. `list[int]` and `List[int]` are the same
+  class at runtime; `X | None` under `from __future__ import annotations`
+  is a string at parse time on 3.9 and only resolves under
+  `typing.get_type_hints()` (which is not used inside `uams.*`).
+- `requires-python = ">=3.9"` is unchanged. No minimum-version bump.
+- Public re-exports in `src/uams/__init__.py` do not reference any typing
+  names, so no public API surface is removed.
+
+Local: 436 tests / 2 pre-existing unrelated failures (unchanged from v0.5.1).
+
 ## [0.5.1] - 2026-07-15
 
 ### Hardening, documentation, and config wiring
