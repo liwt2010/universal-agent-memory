@@ -71,7 +71,7 @@ class MetricsCollector:
 class HealthHandler(BaseHTTPRequestHandler):
     """Simple HTTP handler for health and metrics."""
 
-    metrics: Optional[MetricsCollector] = None
+    metrics: MetricsCollector | None = None
     uams_instance = None
 
     def log_message(self, format, *args):

@@ -16,6 +16,7 @@ import json
 from typing import Any
 
 from uams.storage.base import MemoryStore
+from uams.core.models import Memory
 from uams.utils.logging import get_logger
 
 logger = get_logger(__name__)

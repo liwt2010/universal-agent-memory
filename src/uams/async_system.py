@@ -53,7 +53,7 @@ class AsyncUniversalMemorySystem:
     ``recall`` can run concurrently with each other.
     """
 
-    def __init__(self, ums: Optional[UniversalMemorySystem] = None):
+    def __init__(self, ums: UniversalMemorySystem | None = None):
         self._ums = ums or UniversalMemorySystem()
         # Per-method locks so unrelated operations don't serialize
         # against each other. A single ``_lock`` on the whole class
