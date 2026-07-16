@@ -107,7 +107,6 @@ warn_unused_configs = true
 # follow-up PR lands.
 ignore_missing_imports = true
 warn_unused_ignores = true
-ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
