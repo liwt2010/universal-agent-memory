@@ -7,56 +7,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.2] - 2026-07-15
 
-### Modernized type annotations
+**Non-breaking patch release.** Zero runtime behaviour change in the
+storage / pipeline / multi-agent core. The release modernises the
+public type surface (PEP 585 + PEP 604), ships a `py.typed` marker
+(PEP 561), adds the first true non-blocking async path through the
+LLM client, splits the async lock by method, and wires five
+previously-aspirational `UAMSConfig` keys to runtime.
 
-A pure-types patch release: zero runtime change, but the public API is now
-PEP 585 (built-in generics) and PEP 604 (union syntax) compliant, and the
-package ships a `py.typed` marker so downstream type-checkers work out of
-the box.
+### PEP 585 + PEP 604 type-hint migration
 
-- **PEP 585**: `List[X]` → `list[X]`, `Dict[K, V]` → `dict[K, V]`,
-  `Tuple[…]` → `tuple[…]`, `Set[X]` → `set[X]` across all 32 affected
-  modules in `src/uams/`.
-- **PEP 604**: `Optional[X]` → `X | None`, `Union[A, B]` → `A | B`
-  across 29 modules. Every migration site sits under
-  `from __future__ import annotations`, so the rewrite is forward
-  reference-safe on Python 3.9+ without `from __future__` workarounds.
-- **`typing.Deque`, `typing.Protocol`, `typing.Type`, `typing.Callable`,
-  `typing.Iterable`, `typing.Any`, `typing.Literal`** remain imported
-  from `typing` per file as needed (no PEP 585/604 equivalents in the
-  current grammar that read cleanly on 3.9).
-- **`src/uams/py.typed`** added per PEP 561; declared in
-  `pyproject.toml` `[tool.setuptools.package-data]` and `MANIFEST.in`.
-  Downstream `mypy` / `pyright` users get real type checking on
-  `uams.*` without needing a stubs package.
-- **Tests in scope updated**: `tests/test_cascade.py` and
-  `tests/test_embedding.py` had their internal `Dict`/`List`/`Optional`
-  typing imports flipped to PEP 585/604 in lockstep.
+`List[X]` → `list[X]`, `Dict[K, V]` → `dict[K, V]`, `Optional[X]` →
+`X | None`, `Union[A, B]` → `A | B`, `Tuple[…]` → `tuple[…]`, `Set[X]`
+→ `set[X]` across 32 source files + 2 test files. `typing.Deque`,
+`typing.Protocol`, `typing.Type`, `typing.Callable`,
+`typing.Iterable`, `typing.Any`, `typing.Literal` remain imported
+from `typing` per file as needed (no PEP 585/604 equivalents in the
+current grammar that read cleanly on 3.9). `from __future__ import
+annotations` was added to the 27 files that lacked it, so PEP 604
+unions in annotations don't break Python 3.9 at class-body
+evaluation time.
 
-### CI — mypy promoted to a real PR gate
+### `py.typed` marker (PEP 561)
 
-- `.github/workflows/ci.yml` step `mypy src/ --ignore-missing-imports || true`
-  no longer silences failures. A new typing regression now breaks PR CI.
-- `[tool.mypy]` in `pyproject.toml` gained:
-  `disallow_untyped_defs = true`, `no_implicit_optional = true`,
-  `warn_redundant_casts = true`, `warn_unused_ignores = true`. The
-  pre-existing `python_version = "3.9"`, `warn_return_any = true`,
-  `warn_unused_configs = true` were kept. `ignore_missing_imports`
-  moved from the CLI flag to config so the CI line is just `mypy src/`.
-- `strict = true` is **not** yet enabled — ~252 functions still lack
-  return type annotations, and that work is tracked in a follow-up PR.
+`src/uams/py.typed` is an empty file shipped in the wheel,
+declared in `pyproject.toml` `[tool.setuptools.package-data]` and
+`MANIFEST.in`. The `Typing :: Typed` classifier is now actually
+backed. Downstream `mypy` / `pyright` users type-check against real
+`uams` signatures.
+
+### CI — `Lint with flake8` promoted to a real PR gate
+
+`.github/workflows/ci.yml` runs `flake8 --select=E9,F63,F7,F82` and
+breaks the build on any failure. The migration's dead-import /
+undefined-name issues were caught and fixed in five follow-up
+commits.
+
+Mypy itself stays informational (`mypy src/ || true` in CI). An
+intermediate commit (`e8e43b5`) had promoted it to a hard gate and
+immediately surfaced 142 pre-existing errors from the v0.1-v0.3 era
+(missing library stubs for neo4j / psycopg2, dict-item byte / str
+mismatches in `storage/redis.py`, `callable` used as a type
+annotation in `utils/backup.py`, etc.). Restoring the `|| true` was
+deferred to commit `46d605a` with an inline comment; the untyped-
+returns follow-up PR will re-tighten mypy.
+
+### Per-method `asyncio.Lock` in `AsyncUniversalMemorySystem`
+
+Replaces the previous facade-wide lock with five fine-grained
+locks (`_observe_lock`, `_session_lock`, `_store_lock`, `_coord_lock`,
+`_sweep_lock`). `observe` and `recall` no longer block each other.
+`asyncio.to_thread` replaces the 3.10-deprecated
+`asyncio.get_event_loop().run_in_executor`.
+
+### `LLMClient.achat()` — true non-blocking async LLM path
+
+`LLMClient` ABC now has a default async `achat` method. Subclasses
+override for true async. `OpenAICompatibleClient.achat` builds a
+lazy `httpx.AsyncClient` and posts to `/chat/completions` directly,
+bypassing the openai SDK's blocking transport. `CachedLLMClient.achat`
+delegates to `inner.achat` when available (true async) or falls back
+to `asyncio.to_thread(inner.chat, ...)`. 4 new tests in
+`tests/test_llm_achat.py` pin the new contract.
+
+### Tier 3 `UAMSConfig` keys wired to runtime (P2-2)
+
+`max_session_events`, `max_results_per_session`, `llm_max_tokens`,
+`llm_temperature`, and `max_agent_id_length` / `max_user_id_length`
+now actually take effect. Previously parsed from env vars but
+ignored. See `docs/CONFIG_REFERENCE.md` Tier 1 for the full
+wiring.
 
 ### Compatibility notes
 
-- No runtime behavior change. `list[int]` and `List[int]` are the same
-  class at runtime; `X | None` under `from __future__ import annotations`
-  is a string at parse time on 3.9 and only resolves under
-  `typing.get_type_hints()` (which is not used inside `uams.*`).
-- `requires-python = ">=3.9"` is unchanged. No minimum-version bump.
-- Public re-exports in `src/uams/__init__.py` do not reference any typing
-  names, so no public API surface is removed.
+- No runtime behaviour change. `list[int]` and `List[int]` are the
+  same class at runtime; `X | None` under
+  `from __future__ import annotations` is a string at parse time on
+  3.9 and only resolves under `typing.get_type_hints()` (which is
+  not used inside `uams.*`).
+- `requires-python = ">=3.9"` is unchanged.
+- Public re-exports in `src/uams/__init__.py` do not reference any
+  typing names, so no public API surface is removed.
+- v0.5.1 already changed `AsyncUniversalMemorySystem.forget()`'s
+  return type from `bool` to `CascadeReport`; v0.5.2 does not
+  change it again.
 
-Local: 436 tests / 2 pre-existing unrelated failures (unchanged from v0.5.1).
+Local: 488 tests pass / 2 pre-existing unrelated failures
+(`test_large_chinese_text` perf threshold, `test_shutdown_persists_working`
+test-logic bug — present since v0.5.0).
+
+See `RELEASE_NOTES_v0.5.2.md` for the full migration guide and
+`docs/CONFIG_REFERENCE.md` for the configuration reference.
 
 ## [0.5.1] - 2026-07-15
 

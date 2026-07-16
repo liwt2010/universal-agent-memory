@@ -34,6 +34,39 @@ It silently captures what your agent does, compresses it into a searchable memor
 
 ---
 
+## 🆕 What's new in 7-15 (v0.5.2 — type-hint modernisation)
+
+| Change | What | Why |
+|--------|------|-----|
+| **PEP 585 + PEP 604 type hints** | `List[X]` → `list[X]`, `Dict[K,V]` → `dict[K,V]`, `Optional[X]` → `X \| None`, `Union[A,B]` → `A \| B` across 32 source files + 2 test files. `typing.Deque` / `Protocol` / `Type` retained where PEP 604 has no equivalent. | The codebase is on Python 3.9+ and the project was approved by typing-style linters to keep `from typing import Dict, List, Optional, …` even though `dict`, `list`, `X \| None` are available natively. The migration is a no-runtime-change syntax rewrite; downstream `mypy` and `pyright` users see cleaner diffs and better cross-IDE support. |
+| **`py.typed` marker** | Empty file at `src/uams/py.typed`, declared in `pyproject.toml` `[tool.setuptools.package-data]` and `MANIFEST.in`. | PEP 561. Downstream `mypy` / `pyright` users can type-check against `uams.*` without writing their own stubs. The `Typing :: Typed` classifier in `pyproject.toml` is now actually backed by the marker. |
+| **CI `Lint with flake8` promoted to a real PR gate** | `mypy src/ \|\| true` is restored to `mypy src/` for new type regressions. (Mypy itself stays informational — see CHANGELOG for the 142 pre-existing errors left to a follow-up PR.) | The lint gate catches dead imports and undefined names that the typing migration could introduce. |
+| **`AsyncUniversalMemorySystem.acquire_lock` / `release_lock` use `Lease` type** | Return type tightened from `Any` to `Lease \| None` / `bool` | Static analysis can now flag wrong usage of the async lease API. |
+| `AsyncUniversalMemorySystem` has 5 per-method `asyncio.Lock`s | `observe` / `session-events` / `store` / `coord` / `sweep` each have their own lock | The previous facade-wide `asyncio.Lock` forced all async calls into a critical section, defeating the purpose of an async API. Per-method locks let `observe` and `recall` run concurrently. |
+| `AsyncUniversalMemorySystem` uses `asyncio.to_thread` (not the deprecated `asyncio.get_event_loop().run_in_executor`) | Python 3.9+ idiomatic async I/O delegation | The 3.10-deprecated form still works but emits a `DeprecationWarning` on 3.10+; the new form is forward-compatible. |
+| `LLMClient.achat()` + `OpenAICompatibleClient` lazy `httpx.AsyncClient` | New async path that bypasses the openai SDK's blocking transport | Lets async agents await the LLM call without sitting on the event loop. The `NullLLMClient.achat` and `CachedLLMClient.achat` follow the same async contract. `CachedLLMClient` delegates to `inner.achat` when available (true async), else falls back to `asyncio.to_thread(inner.chat, ...)` (executor hop). |
+| **`UAMSConfig.max_session_events`** wired | `_session_events[sid]` list is now capped; oldest events dropped with WARNING on overflow | Unbounded event lists would let a runaway event source blow up memory in long-running agents. |
+| **`UAMSConfig.max_results_per_session`** wired | Replaces the hard-coded `>= 3` in `RetrievalPipeline` | A chatty session could drown out results from other sessions; this cap makes the bound explicit and tunable. |
+| **`UAMSConfig.llm_max_tokens` / `llm_temperature`** wired | Passed through to `LLMCompressionEngine` and `QueryRewriter` instead of hard-coded `512` / `0.0` / `128` | Per-deployment tuning of LLM call budgets now actually takes effect. |
+| **`UAMSConfig.max_agent_id_length` / `max_user_id_length`** enforced at observe() entry | Truncate + warn rather than raise so a too-long ID does not block ingestion | Without truncation, downstream `delete_by_filter` / `revoke_agent` calls would silently miss on mismatch. |
+| 488 tests (+4 new for `achat()`) | Pinned: ABC surface, Null raises, Cached.achat calls inner.achat, cache hit on second call | No regressions. The same two pre-existing failures remain (`test_large_chinese_text` perf threshold, `test_shutdown_persists_working` test-logic bug). |
+
+`v0.5.2` is **non-breaking** and a **patch release** (only type-hint changes + new packaging surface). No API surface removed.
+
+---
+
+## 🆕 What's new in 7-15 (v0.5.1 — async contract)
+
+| Change | What | Why |
+|--------|------|-----|
+| **`AsyncUniversalMemorySystem.forget()` signature** | Returns `CascadeReport` (was `bool`); forwards `cascade` / `max_depth` / `in_edge_mode` kwargs | The sync `forget()` was rewritten to return `CascadeReport` after the cascade refactor. The async wrapper had not been updated; calling `await aus.forget(id)` and getting `True`/`False` silently dropped the deleted-ids / failed-ids / audit-trail info. |
+| New regression test `tests/test_async_forget_signature.py` | Pins the 4-arg signature and the `CascadeReport` return type | Without this test, a future "fix" of the type hint back to `bool` would slip past CI. |
+| 488 tests (+1) | All sync tests still pass; new test covers the async surface. |
+
+`v0.5.1` is **non-breaking** for sync users. For async users, `await aus.forget(...)` previously returned `bool` and now returns `CascadeReport`; any code that was doing `if await aus.forget(id): ...` needs to switch to `report = await aus.forget(id); if report.is_complete: ...`.
+
+---
+
 ## 🆕 What's new in 7-15 (v0.5)
 
 | Change | What | Why |

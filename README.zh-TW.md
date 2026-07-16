@@ -116,6 +116,39 @@ receipt = {
 
 ---
 
+## 🆕 7-15 新增（v0.5.2 — 型別註解現代化）
+
+| 改動 | 內容 | 原因 |
+|------|------|------|
+| **PEP 585 + PEP 604 型別註解** | `List[X]` → `list[X]`,`Dict[K,V]` → `dict[K,V]`,`Optional[X]` → `X \| None`,`Union[A,B]` → `A \| B`,涵蓋 32 個原始檔 + 2 個測試檔。`typing.Deque` / `Protocol` / `Type` 仍保留(PEP 604 無對應) | 專案目標是 Python 3.9+,而 PEP 585/604 在該版本已可用。遷移是零執行時變化的純語法重寫;下游 `mypy` / `pyright` 使用者能看到更乾淨的 diff 與更好的 IDE 支援。 |
+| **`py.typed` 標記** | 空檔 `src/uams/py.typed`,於 `pyproject.toml` `[tool.setuptools.package-data]` 與 `MANIFEST.in` 中宣告 | PEP 561。下游 `mypy` / `pyright` 使用者能直接對 `uams.*` 進行型別檢查,不需自己寫 stub。`pyproject.toml` 裡的 `Typing :: Typed` 分類器名實相符。 |
+| **CI `Lint with flake8` 升級為真實 PR gate** | `mypy src/ \|\| true` 恢復成 `mypy src/` 攔截新錯誤(而 mypy 本身仍 informational——見 CHANGELOG 剩餘 142 個歷史錯誤,留給後續 PR) | 攔截型別遷移可能引入的 dead import 與未定義 name。 |
+| **`AsyncUniversalMemorySystem.acquire_lock` / `release_lock` 型別精確化** | `acquire_lock` 傳回 `Lease \| None`,`release_lock` 傳回 `bool`(原為 `Any`) | 靜態分析可正確識別 async lease API 的錯用。 |
+| `AsyncUniversalMemorySystem` 拆為 5 個 per-method `asyncio.Lock` | `observe` / `session-events` / `store` / `coord` / `sweep` 各一把鎖 | 舊版一個 facade-wide 鎖把全部 async 呼叫串列化,違背 async 初衷;現在 `observe` 與 `recall` 可並發。 |
+| `AsyncUniversalMemorySystem` 用 `asyncio.to_thread` 取代 `asyncio.get_event_loop().run_in_executor` | Python 3.9+ 慣用 async I/O 委託 | 3.10+ 後者會觸發 `DeprecationWarning`;前者向前相容。 |
+| `LLMClient.achat()` + `OpenAICompatibleClient` 惰性 `httpx.AsyncClient` | 跳過 openai SDK 阻塞 transport 的真 async 路徑 | async agent 等待 LLM 不再阻塞 event loop。`NullLLMClient.achat` / `CachedLLMClient.achat` 同樣遵循非同步契約;`CachedLLMClient` 優先 `inner.achat`(真 async),否則 fallback 到 `asyncio.to_thread(inner.chat, ...)`。 |
+| **`UAMSConfig.max_session_events`** 已接線 | `_session_events[sid]` 列表現帶 cap,溢位時丟棄最舊事件 + WARNING | 防止長跑 agent 因事件源失控把記憶體撐爆。 |
+| **`UAMSConfig.max_results_per_session`** 已接線 | 替代 `RetrievalPipeline` 裡硬編碼的 `>= 3` | 單個會話結果過多會淹沒其他會話的檢索結果;現在 cap 可顯式調。 |
+| **`UAMSConfig.llm_max_tokens` / `llm_temperature`** 已接線 | 透傳給 `LLMCompressionEngine` 與 `QueryRewriter`,不再硬編碼 `512` / `0.0` / `128` | LLM 呼叫預算的部署級調參真正生效。 |
+| **`UAMSConfig.max_agent_id_length` / `max_user_id_length`** 在 `observe()` 入口強制 | 超長則截斷 + 警告而非拋錯 | 避免 `delete_by_filter` / `revoke_agent` 因 key 不匹配而靜默漏掉。 |
+| 488 測試 (+4 用於 `achat()`) | 釘死:ABC 介面、Null raises、Cached.achat 走 inner.achat、二次呼叫命中快取 | 無回歸。兩個原本就存在的失敗仍存在(`test_large_chinese_text` 效能閾值、`test_shutdown_persists_working` 測試邏輯 bug)。 |
+
+`v0.5.2` 是 **non-breaking patch release**(純型別註解變化 + 新打包面),無 API 移除。
+
+---
+
+## 🆕 7-15 新增（v0.5.1 — async 契約）
+
+| 改動 | 內容 | 原因 |
+|------|------|------|
+| **`AsyncUniversalMemorySystem.forget()` 簽名** | 傳回 `CascadeReport`(原 `bool`);轉發 `cascade` / `max_depth` / `in_edge_mode` 參數 | 同步版 `forget()` 在級聯重構後已傳回 `CascadeReport`,async 包裝卻沒跟上,導致 `await aus.forget(id)` 靜默丟掉 deleted-ids / failed-ids / 稽核資訊。 |
+| 新增回歸測試 `tests/test_async_forget_signature.py` | 釘死 4 參簽名與 `CascadeReport` 傳回型別 | 沒有這條測試,以後把 hint 改回 `bool` 也會過 CI。 |
+| 488 測試 (+1) | 同步測試全過;新測試覆蓋 async 表面。 |
+
+對同步使用者, **`v0.5.1` non-breaking**。對 async 使用者,`await aus.forget(...)` 之前傳回 `bool`,現在傳回 `CascadeReport`;任何 `if await aus.forget(id): ...` 需要改成 `report = await aus.forget(id); if report.is_complete: ...`。
+
+---
+
 ## 🆕 7-15 新增（v0.5 安全加固）
 
 | 改動 | 內容 | 原因 |

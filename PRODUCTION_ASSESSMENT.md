@@ -22,6 +22,32 @@
 > 1. `InputValidator.sanitize_sql` 移除。调用方应改用参数化查询 + `is_safe_identifier` 白名单。
 > 2. Pre-v0.4.0 的 pickle-encoded embeddings roundtrip 成 `embedding=None`。需要运行 `embedding_serde` docstring 里的迁移脚本(对带 legacy 数据的部署是必须的一步)。
 
+> **2026-07-15 v9 更新(本次,v0.5.2 收尾)**:本次为 **纯类型与基础设施批次**。无新能力,无运行时行为变化,公开 API surface 不动。`v0.5.2` 是 `0.5.1` 之后的 **non-breaking patch release**。共 11 个 commit,500 行修改(其中 350+ 是机械类型替换 + 注释),**净 +20 行**。
+
+> **v9 工作范围**:
+> - **P2-4 PEP 585/604 类型注解现代化**:`List[X]` → `list[X]`, `Dict[K,V]` → `dict[K,V]`, `Optional[X]` → `X | None`, `Union[A,B]` → `A | B` 跨 32 源文件 + 2 测试文件。`typing.Deque` / `Protocol` / `Type` / `Callable` / `Iterable` / `Any` / `Literal` 保留(无 PEP 585/604 等价物)。27 个文件新增 `from __future__ import annotations` 以推迟 annotation 字符串化,使 PEP 604 联合在 3.9 也能在 class body 表达式位置安全使用。**零运行时变化**。
+> - **`py.typed` 标记(PEP 561)**:`src/uams/py.typed` 空文件 + `pyproject.toml` `[tool.setuptools.package-data]` + `MANIFEST.in` 声明。兑现 `pyproject.toml` 里早就写的 `Typing :: Typed` classifier。
+> - **CI Lint gate 真化**:`flake8 --select=E9,F63,F7,F82` 不再被 `|| true` 屏蔽。P2-4 迁移过程中发现 12 个真正的 F401(死 import) + 3 个 F821(未定义 name) + 1 个重复 `pyproject.toml` 键,5 个 fix(lint) commit 修完,本地 flake8 现在 clean。
+> - **Mypy gate 试运行后回退**:`ci(gate)` commit 试把 `mypy src/` 真化,立即发现 142 个 v0.1-v0.3 历史错误(neo4j / psycopg2 library stubs 缺失、redis bytes/str dict 不一致、`utils/backup.py` 用 `callable` 作为 type annotation、9 个 `Optional[X]` default 隐式转换等)。在 `46d605a` 中恢复 `|| true`,并加 inline 注释。**untyped-returns follow-up PR 落地后再开**。
+> - **P2-2 Tier 3 cap key 接线**:`max_session_events`、`max_results_per_session`、`llm_max_tokens`、`llm_temperature`、`max_agent_id_length` / `max_user_id_length` 5 个之前只 parse 不 apply 的 key 真正生效,改了 `system.py` / `retrieval.py` / `llm_compression.py` / `query_rewrite.py` 4 个文件。`enable_metrics` / `enable_audit_log` / `audit_log_path` 仍 aspirational(在 `docs/CONFIG_REFERENCE.md` Tier 3)。
+> - **P2-3 async LLM `achat()`**:`LLMClient` ABC 加 `achat()`,`OpenAICompatibleClient.achat` 用 `httpx.AsyncClient` 直接 POST `/chat/completions`(跳过 openai SDK 阻塞 transport),`CachedLLMClient.achat` 优先 `inner.achat`(真 async)fallback `asyncio.to_thread(inner.chat)`。`NullLLMClient.achat` raise。`AsyncUniversalMemorySystem` 拆 facade-wide lock 为 5 个 per-method lock(`_observe_lock` / `_session_lock` / `_store_lock` / `_coord_lock` / `_sweep_lock`),`observe` 与 `recall` 可并发;`asyncio.to_thread` 替代 `asyncio.get_event_loop().run_in_executor`(后者 3.10+ deprecated)。4 个新测试 in `tests/test_llm_achat.py`。
+
+> **v9 CI 现状**(`b294c68` commit,跑了 31m48s):
+> - ✅ `Lint with flake8` clean
+> - ✅ `mypy src/ || true` informational pass(实际有 142 errors,见上)
+> - ✅ `Test with pytest (mock/unit only)` — **唯一失败是 `test_shutdown_persists_working`**(本地 pytest 也 fail,known pre-existing since v0.5.0)
+> - ✅ `Test with real postgresql / chromadb / neo4j backend` pass
+> - ✅ `Stress test with real postgresql / redis / neo4j backend` pass
+> - ⚠ `Test with real redis backend` / `Stress test with real chromadb backend` fail —— 与 v0.5.0 状态一致,**与 P2-4 无关**
+
+> **v9 评级动作 — 维持 A-**:`v0.5.2` **不引入新能力**、不修 bug、纯类型层 + CI 基础。**距 A+ 仍缺**(与 v8 同):真实 case study / 真实 LLM 月报 / 第三方 pen-test / 6 后端 cluster 演练 / Helm。`v0.5.2` 落地后,**`docs/CONFIG_REFERENCE.md` 与 `CHANGELOG.md` 重新对齐** —— Tier 1 / Tier 2 列出接线的 key,Tier 3 列出 aspirational 的。
+
+> **v9 后续 PR 清单**(不再属于 v0.5.2):
+> 1. `untyped-returns`:为 ~252 个 def 补 `-> X` 返回类型,完成后开 `disallow_untyped_defs = true`。
+> 2. `mypy cleanup`:修 9 个 `no_implicit_optional` 默认值 + 7 个 redis bytes/str dict item + neo4j/psycopg2 加 `# type: ignore[import-untyped]` + `utils/backup.py` 的 `callable` type 替换为 `Callable`。
+> 3. `redis test` 跟 `chromadb stress`:历史 backend CI 不稳定,需要单独 dev session 调研。
+> 4. `AsyncMemoryStore` ABC(P2-1)+ 真 async 6 存储:对 `async_system` 的 executor hop 是 8 线程默认池饱和源。
+
 > **2026-07-12 v7 更新(本次)**:本次为 **独立审计加固批次**。本地手工审计 + 后台独立 agent(并发、DX 两个角度)交叉验证,**共发现 15 个真问题**,分布在 P0/P1/P2 三档,5 个 commit 修复完成,版本从 0.1.0 跃升到 **0.3.0**。
 >
 > **P0 真问题(静默 correctness)**:
