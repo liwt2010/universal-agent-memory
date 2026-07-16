@@ -25,7 +25,7 @@ import threading
 import time
 from typing import Callable, Iterable
 
-from uams.embedding.base import EmbeddingFn, EmbeddingProvider
+from uams.embedding.base import EmbeddingProvider
 
 
 class NullEmbeddingProvider(EmbeddingProvider):

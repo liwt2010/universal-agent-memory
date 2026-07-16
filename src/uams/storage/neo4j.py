@@ -20,7 +20,7 @@ from uams.core.models import (
     Memory, MemoryId, TemporalAnchor, AgentContext,
     MemoryPayload, MemoryMetadata, Relation,
 )
-from uams.core.enums import MemoryType, PrivacyLevel, EventType
+from uams.core.enums import MemoryType, PrivacyLevel
 from uams.utils.logging import get_logger
 
 logger = get_logger(__name__)

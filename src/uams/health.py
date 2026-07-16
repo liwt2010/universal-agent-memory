@@ -7,7 +7,6 @@ Exposes Prometheus-compatible metrics on /metrics.
 from __future__ import annotations
 
 import threading
-import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from uams.utils.logging import get_logger

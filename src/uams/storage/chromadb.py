@@ -15,7 +15,6 @@ from uams.core.models import (
 )
 from uams.core.enums import MemoryType, PrivacyLevel
 from uams.utils.logging import get_logger
-import threading
 
 logger = get_logger(__name__)
 

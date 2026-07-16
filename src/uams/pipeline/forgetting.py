@@ -9,7 +9,6 @@ decays in days).
 
 from __future__ import annotations
 
-import math
 from datetime import timedelta
 
 from uams.core.enums import MemoryType

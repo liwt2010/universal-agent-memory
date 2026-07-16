@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from uams.llm.client import LLMClient
 from uams.core.enums import EventType, MemoryType, PrivacyLevel
@@ -157,7 +157,7 @@ class UniversalMemorySystem(EventHandler):
             return HeuristicCompressionEngine()
 
         try:
-            from uams.llm.client import CachedLLMClient, OpenAICompatibleClient
+            from uams.llm.client import OpenAICompatibleClient
             from uams.pipeline.llm_compression import LLMCompressionEngine
 
             inner = OpenAICompatibleClient(
@@ -260,7 +260,7 @@ class UniversalMemorySystem(EventHandler):
         if not (self._config.llm_enabled and self._config.llm_api_key):
             return None
         try:
-            from uams.llm.client import CachedLLMClient, OpenAICompatibleClient
+            from uams.llm.client import OpenAICompatibleClient
             from uams.pipeline.query_rewrite import QueryRewriter
 
             inner = OpenAICompatibleClient(
