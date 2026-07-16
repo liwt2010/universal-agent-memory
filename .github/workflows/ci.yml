@@ -227,7 +227,7 @@ jobs:
           python -c "import json; r=json.load(open('stress_report_postgresql.json')); print(f'[stress postgresql] {r[\"ops_per_sec\"]:.1f} ops/sec err={r[\"error_rate\"]:.2%} p95={r[\"p95_ms\"]:.1f}ms rss+{r[\"rss_growth_mb\"]:.1f}MB')"
       - name: Upload stress report artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: stress-report-postgresql
           path: stress_report_postgresql.json
@@ -257,7 +257,7 @@ jobs:
           python -c "import json; r=json.load(open('stress_report_chromadb.json')); print(f'[stress chromadb] {r[\"ops_per_sec\"]:.1f} ops/sec err={r[\"error_rate\"]:.2%} p95={r[\"p95_ms\"]:.1f}ms rss+{r[\"rss_growth_mb\"]:.1f}MB')"
       - name: Upload stress report artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: stress-report-chromadb
           path: stress_report_chromadb.json
@@ -303,7 +303,7 @@ jobs:
           python -c "import json; r=json.load(open('stress_report_redis.json')); print(f'[stress redis] {r[\"ops_per_sec\"]:.1f} ops/sec err={r[\"error_rate\"]:.2%} p95={r[\"p95_ms\"]:.1f}ms rss+{r[\"rss_growth_mb\"]:.1f}MB')"
       - name: Upload stress report artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: stress-report-redis
           path: stress_report_redis.json
@@ -358,7 +358,7 @@ jobs:
           python -c "import json; r=json.load(open('stress_report_neo4j.json')); print(f'[stress neo4j] {r[\"ops_per_sec\"]:.1f} ops/sec err={r[\"error_rate\"]:.2%} p95={r[\"p95_ms\"]:.1f}ms rss+{r[\"rss_growth_mb\"]:.1f}MB')"
       - name: Upload stress report artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: stress-report-neo4j
           path: stress_report_neo4j.json
