@@ -62,7 +62,7 @@ It silently captures what your agent does, compresses it into a searchable memor
 |--------|------|-----|
 | **`AsyncUniversalMemorySystem.forget()` signature** | Returns `CascadeReport` (was `bool`); forwards `cascade` / `max_depth` / `in_edge_mode` kwargs | The sync `forget()` was rewritten to return `CascadeReport` after the cascade refactor. The async wrapper had not been updated; calling `await aus.forget(id)` and getting `True`/`False` silently dropped the deleted-ids / failed-ids / audit-trail info. |
 | New regression test `tests/test_async_forget_signature.py` | Pins the 4-arg signature and the `CascadeReport` return type | Without this test, a future "fix" of the type hint back to `bool` would slip past CI. |
-| 488 tests (+1) | All sync tests still pass; new test covers the async surface. |
+| 488 tests (unchanged from v0.5.0) | All sync tests still pass; new test covers the async surface. |
 
 `v0.5.1` is **non-breaking** for sync users. For async users, `await aus.forget(...)` previously returned `bool` and now returns `CascadeReport`; any code that was doing `if await aus.forget(id): ...` needs to switch to `report = await aus.forget(id); if report.is_complete: ...`.
 
@@ -478,7 +478,7 @@ pytest tests/ -v
 pytest tests/ --cov=src/uams --cov-report=html
 ```
 
-**Test Results:** 427 tests, 0 failures, 32 skipped locally (PG/Redis/Neo4j service-gated; CI runs all 6 real backends green)
+**Test Results:** 488 tests, 0 failures, 2 pre-existing failures (perf-threshold + test-logic bug, unchanged since v0.5.0); 32 skipped locally (PG/Redis/Neo4j service-gated; CI runs all 6 real backends green)
 
 | Test Category | Count | Coverage |
 |--------------|-------|----------|
@@ -497,7 +497,7 @@ pytest tests/ --cov=src/uams --cov-report=html
 | Mock storage (Redis / Neo4j) | 16 | Storage/retrieve/search/graph/PubSub/expiry |
 | **Real backend e2e (CI)** | **+50** | **6/6 storage engines verified in CI: PG / ChromaDB / Redis / Neo4j / SQLite / InMemory** |
 | **Cascade forget** | **+29** | **Strategy enum + audit writer + BFS + cycle/cross-tier/partial + system rewire** |
-| **Total** | **427** | **All passing locally (32 skipped, server-gated); CI 9/9 green for 6/6 backends** |
+| **Total** | **488** | **All passing locally (32 skipped, server-gated); CI 9/9 green for 6/6 backends** |
 
 ---
 
@@ -549,7 +549,7 @@ universal-agent-memory/
 │   ├── research_agent.py
 │   ├── multi_agent.py
 │   └── _token_compression_demo.py
-├── tests/                      # 427 test cases
+├── tests/                      # 488 test cases
 │   ├── test_system.py
 │   ├── test_chaos.py
 │   ├── test_aplus.py
@@ -719,7 +719,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines and [CODE_OF_COND
 | **Feature request** | GitHub Issues | 14 days | Best effort |
 | **General question** | GitHub Discussions | 7 days | Community-driven |
 
-**Versioning**: UAMS follows [Semantic Versioning](https://semver.org/). The `0.1.x` line is the currently supported line; breaking changes bump the major version and follow the deprecation policy below.
+**Versioning**: UAMS follows [Semantic Versioning](https://semver.org/). The `0.5.x` line is the currently supported line; breaking changes bump the minor version (e.g. 0.4.x → 0.5.x) and follow the deprecation policy below.
 
 **Deprecation policy**: Features marked deprecated in [CHANGELOG.md](CHANGELOG.md) remain functional for at least one minor release cycle (≥ 90 days) before removal. Deprecation warnings are emitted at runtime.
 

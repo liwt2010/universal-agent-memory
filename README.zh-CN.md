@@ -143,7 +143,7 @@ receipt = {
 |------|------|------|
 | **`AsyncUniversalMemorySystem.forget()` 签名** | 返回 `CascadeReport`(原 `bool`);转发 `cascade` / `max_depth` / `in_edge_mode` 参数 | 同步版 `forget()` 在级联重构后已返回 `CascadeReport`,async 包装却没跟上,导致 `await aus.forget(id)` 静默丢掉 deleted-ids / failed-ids / 审计信息。 |
 | 新增回归测试 `tests/test_async_forget_signature.py` | 钉死 4 参签名与 `CascadeReport` 返回类型 | 没有这条测试,以后把 hint 改回 `bool` 也会过 CI。 |
-| 488 测试 (+1) | 同步测试全过;新测试覆盖 async 表面。 |
+| 488 测试 (与 v0.5.0 一致) | 同步测试全过;新测试覆盖 async 表面。 |
 
 对同步用户,**`v0.5.1` non-breaking**。对 async 用户,`await aus.forget(...)` 之前返回 `bool`,现在返回 `CascadeReport`;任何 `if await aus.forget(id): ...` 需要改成 `report = await aus.forget(id); if report.is_complete: ...`。
 
@@ -443,7 +443,7 @@ universal-agent-memory/
 │   ├── research_agent.py
 │   ├── multi_agent.py
 │   └── _token_compression_demo.py
-├── tests/                  # 456 个测试
+├── tests/                  # 488 个测试
 │   ├── test_system.py
 │   ├── test_chaos.py
 │   ├── test_aplus.py
@@ -515,7 +515,7 @@ python tests/test_system.py
 | **6 后端真实验证(CI 9/9 green)** | **PG / ChromaDB / Redis / Neo4j / SQLite / InMemory 全部真实 service 跑通** |
 | **级联删除** | **三策略 + visit-set + 最大深度上限 + 跨层隔离 + 最佳努力删除 + JSONL 审计** |
 
-**测试规模**:456 测试(本地 32 skip:无 PG/Redis/Neo4j service 时跳过真实后端;CI 上全部跑通)。7-12 审计加固新增 29 个:信号队列 4 + Redis auto-disable 3 + SQLite close 2 + backup 错误分类 2 + cascade 审计日志 2 + Async forget 4 + SQLite pool 3 + SIGTERM 3 + decay_sweep 锁 2 + SQLite retrieve 回归 3。
+**测试规模**:488 测试(本地 32 skip:无 PG/Redis/Neo4j service 时跳过真实后端;CI 上全部跑通)。7-12 审计加固新增 29 个:信号队列 4 + Redis auto-disable 3 + SQLite close 2 + backup 错误分类 2 + cascade 审计日志 2 + Async forget 4 + SQLite pool 3 + SIGTERM 3 + decay_sweep 锁 2 + SQLite retrieve 回归 3。
 
 ---
 
