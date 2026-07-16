@@ -2,11 +2,12 @@
 
 `UAMSConfig` is a frozen dataclass with 50+ fields spanning storage
 backends, LLM tuning, embedding providers, retention, security, and
-audit. About **half of those fields are not actually read by any
-production code path** — the audit pass that landed v0.4.0 / v0.5.0
-fixed the highest-impact ones (e.g. `sqlite_pool_size`, `cascade_*`)
-but the rest were left as inert dataclass slots because removing them
-would be a breaking change for deployment scripts that already set them.
+audit. The audit pass that landed v0.4.0 / v0.5.0 fixed the
+highest-impact ones (e.g. `sqlite_pool_size`, `cascade_*`); the
+v0.5.2 release added the next six (`max_session_events`,
+`max_results_per_session`, `llm_max_tokens`, `llm_temperature`,
+`max_agent_id_length`, `max_user_id_length`). The remaining aspirational
+keys are listed in Tier 3 below.
 
 This file is the source of truth for **which config keys actually
 take effect** so operators don't waste time tuning keys that are
@@ -39,6 +40,12 @@ production changes behavior.
 | `strictness` | production / staging / development env ladder | `config.py:validate` |
 | `environment` | top-level environment label | `config.py:validate` |
 | `structured_logging` | JSON vs text logs | `config.py:from_env → configure_logging` |
+| `max_session_events` | Cap on `_session_events[sid]` list per session; oldest events dropped on overflow | `system.py:observe` (wired v0.5.2) |
+| `max_results_per_session` | Replace the hard-coded `>= 3` cap in `RetrievalPipeline`; constructor parameter | `system.py → RetrievalPipeline(..., max_results_per_session=...)` (wired v0.5.2) |
+| `llm_max_tokens` | Pass-through to `LLMCompressionEngine` (default 512) and `QueryRewriter` (default 128) instead of hard-coded values | `system.py:_build_compression_engine` / `_build_query_rewriter` (wired v0.5.2) |
+| `llm_temperature` | Same as above (default 0.0) | (wired v0.5.2) |
+| `max_agent_id_length` | Truncate `AgentContext.agent_id` to this length at `observe()` entry; warn rather than raise | `system.py:observe` (wired v0.5.2) |
+| `max_user_id_length` | Same as above for `AgentContext.user_id` | `system.py:observe` (wired v0.5.2) |
 
 ## Tier 2 — Wired but with a caveat
 

@@ -39,6 +39,78 @@ The system is designed to be:
 
 ---
 
+## Async Architecture (v0.5.x)
+
+`AsyncUniversalMemorySystem` wraps `UniversalMemorySystem` and exposes
+the same public surface as async coroutines. The 6 storage backends,
+the privacy filter, the cascade forgetter, and the LLM compression
+engine are all **synchronous** in v0.5.2 — async performance comes
+from three places, not from rewriting the store layer (that work is
+scoped for v0.6.x):
+
+### 1. Per-method `asyncio.Lock` (v0.5.2)
+
+The previous facade-wide lock forced every async call into a single
+critical section — defeating the purpose of an async API. As of
+v0.5.2 the lock is split into five fine-grained locks so unrelated
+operations can run in parallel:
+
+| Lock name | Serialises | Operations |
+|---|---|---|
+| `_observe_lock` | Two concurrent `observe()` calls (mutate `_session_events`) | `observe` |
+| `_session_lock` | Session-event list mutation | `consolidate`, `clear` |
+| `_store_lock` | `remember` / `recall` / `forget` / `inject_context` / `get_stats` / `clear` | `remember`, `recall`, `forget`, `forget_by_*`, `inject_context`, `get_stats`, `clear` |
+| `_coord_lock` | Multi-agent coordination | `acquire_lock`, `release_lock`, `send_signal`, `read_signals` |
+| `_sweep_lock` | Decay sweep | `decay_sweep` |
+
+Two operations that share a lock can no longer run concurrently; any
+two operations on different locks run in parallel. `observe` and
+`recall` no longer block each other.
+
+### 2. `asyncio.to_thread` (v0.5.1, retained in v0.5.2)
+
+Sync storage / pipeline work is delegated to the default executor
+via `asyncio.to_thread(...)`. This replaces the
+3.10-deprecated `asyncio.get_event_loop().run_in_executor(...)` form.
+The default executor has 8 worker threads on Linux (scaled to
+`min(32, os.cpu_count() + 4)` on 3.8+); an event loop that issues
+many synchronous DB calls will saturate it. Operators needing true
+async I/O should run `UniversalMemorySystem` in a dedicated thread
+pool and call it from async code (or migrate to the future
+`AsyncMemoryStore` ABC planned for v0.6.x).
+
+### 3. `LLMClient.achat()` true async path (v0.5.2)
+
+The LLM client now has a true non-blocking async path, **separate from
+the executor-hop fallback**:
+
+```
+Async caller
+   ↓
+LLMClient.achat(messages)
+   ↓  (true async)
+OpenAICompatibleClient.achat
+   ↓  httpx.AsyncClient.post(/chat/completions)  ← skips openai SDK
+                                                blocking transport
+```
+
+For mock / cache / no-op clients, the default `LLMClient.achat`
+implementation falls back to `asyncio.to_thread(self.chat, ...)` so
+existing code paths work. `CachedLLMClient.achat` delegates to
+`inner.achat` when available (true async), or falls back to
+`asyncio.to_thread(inner.chat, ...)` otherwise.
+
+### Storage backends (still sync in v0.5.2)
+
+`InMemoryStore` / `SQLiteStore` / `PostgreSQLStore` / `RedisStore` /
+`Neo4jStore` / `ChromaDBStore` are all sync. They run on the executor
+via `asyncio.to_thread`. True async I/O for each backend is in the
+v0.6.x roadmap (`AsyncMemoryStore` ABC + per-backend async
+implementations backed by aiosqlite / asyncpg / redis.asyncio /
+neo4j-async-driver / httpx-backed chromadb).
+
+---
+
 ## Memory Loop
 
 ### Ingestion Flow

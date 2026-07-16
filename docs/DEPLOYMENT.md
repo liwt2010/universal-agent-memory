@@ -15,6 +15,18 @@
 
 ## Quick Start
 
+> **v0.5.2 note**: this release ships `py.typed` (PEP 561), so any
+> downstream project that runs `mypy` or `pyright` on its code that
+> imports from `uams.*` will type-check against the real `uams`
+> type signatures. No `py.typed` setup is needed on the consumer
+> side — the marker travels with the wheel.
+>
+> **v0.5.2 has zero runtime change** versus v0.5.1. No migration
+> steps are needed; any deployment scripts that pinned
+> `universal-agent-memory>=0.5,<0.6` continue to work. If you were
+> on v0.5.0, see `RELEASE_NOTES_v0.5.1.md` for the async-forget
+> return-type change.
+
 ### 1. In-Memory Mode (Development / Testing)
 
 ```bash

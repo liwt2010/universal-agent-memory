@@ -1,11 +1,12 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.3.0-blue.svg" alt="Version 0.3.0">
+  <img src="https://img.shields.io/badge/version-0.5.2-blue.svg" alt="Version 0.5.2">
   <img src="https://img.shields.io/badge/python-3.9%2B-blue.svg" alt="Python 3.9+">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT">
-  <img src="https://img.shields.io/badge/tests-456%20passing-brightgreen.svg" alt="456 Tests Passing">
-  <img src="https://img.shields.io/badge/token%20compression-72%25%20LLM%20mode-orange.svg" alt="Token Compression: 72% with LLM mode (default heuristic ≈ 0%)">
-  <img src="https://img.shields.io/badge/embeddings-pluggable-blueviolet.svg" alt="Pluggable Embeddings">
+  <img src="https://img.shields.io/badge/tests-488%20passing-brightgreen.svg" alt="488 Tests Passing">
+  <img src="https://img.shields.io/badge/py.typed-yes-blueviolet.svg" alt="py.typed (PEP 561)">
+  <img src="https://img.shields.io/badge/type%20hints-PEP%20585%20%2B%20604-orange.svg" alt="PEP 585 + PEP 604">
   <img src="https://img.shields.io/badge/backends-6%20storage%20engines-blueviolet.svg" alt="6 Storage Backends">
+  <img src="https://img.shields.io/badge/async-asyncio.to_thread%20%2B%20httpx-success.svg" alt="Async via asyncio.to_thread + httpx.AsyncClient">
   <img src="https://img.shields.io/badge/cascade-GDPR%2Daligned-success.svg" alt="Cascade Forget (GDPR)">
   <img src="https://img.shields.io/badge/status-Beta%20%2F%20Pre--production-lightgrey.svg" alt="Beta / Pre-production">
 </p>
