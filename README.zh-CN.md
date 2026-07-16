@@ -645,7 +645,7 @@ python -m unittest discover -s tests -v
 
 ## 许可证
 
-Apache-2.0
+MIT License —— 详见 [LICENSE](LICENSE)。
 
 ---
 
