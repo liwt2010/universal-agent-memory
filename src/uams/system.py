@@ -488,13 +488,33 @@ class UniversalMemorySystem(EventHandler):
         This is the primary ingestion primitive.
         Error handling: if any step fails, event is still published to bus.
         """
-        # 0. Enforce max_agent_id_length / max_user_id_length caps from
+        # 0a. Reject events with empty required fields — these come
+        # from misconfigured agent loops (e.g. agent_id="" or
+        # session_id=None) and would silently land on the "no agent"
+        # bucket, where downstream delete_by_filter("agent_id", "")
+        # would mass-delete every misconfigured agent's memories
+        # at once. Warn + drop instead of accepting. We do NOT raise
+        # because observe() is on the agent hot path.
+        ctx = event.agent_context
+        missing = [
+            name
+            for name in ("agent_id", "agent_type", "session_id")
+            if not getattr(ctx, name, None)
+        ]
+        if missing:
+            logger.warning(
+                "observe() dropping event with empty required field(s) %s; "
+                "agent_id=%r agent_type=%r session_id=%r",
+                missing, ctx.agent_id, ctx.agent_type, ctx.session_id,
+            )
+            return
+
+        # 0b. Enforce max_agent_id_length / max_user_id_length caps from
         # config. Truncate + warn rather than raise so a too-long ID
         # does not block ingestion; downstream filters (delete_by_filter
         # etc.) are keyed on these strings and would silently miss on
         # mismatch.
-        ctx = event.agent_context
-        if ctx.agent_id and len(ctx.agent_id) > self._config.max_agent_id_length:
+        if len(ctx.agent_id) > self._config.max_agent_id_length:
             logger.warning(
                 "agent_id length %d exceeds max_agent_id_length=%d; truncating",
                 len(ctx.agent_id), self._config.max_agent_id_length,
