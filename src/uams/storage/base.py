@@ -105,3 +105,48 @@ class MemoryStore(ABC):
         but accumulate them so the count reflects actual deletions.
         """
         ...
+
+    def delete_by_filters(
+        self, filters: tuple[tuple[str, Any], ...]
+    ) -> int:
+        """Delete all memories whose ``context.<field>`` matches ALL
+        ``(field, value)`` pairs in ``filters``.
+
+        Default fallback: narrow to the rarest-filter survivors via
+        ``list_all``, then ``delete`` per row. This is O(rows) in the
+        worst case and intended only for in-memory / single-process
+        stores where the result set is naturally small.
+
+        Backends with native composite-query support (SQLite,
+        PostgreSQL, Redis, Neo4j, ChromaDB) MUST override this with a
+        single multi-predicate query so the operation stays O(matches)
+        instead of degrading to O(rows).
+
+        All keys must be a dotted path inside ``Memory.context``.
+        Returns the count of memories deleted (0 if no matches).
+
+        Added in v0.6.0 to support multi-tenant GDPR deletion
+        (``delete_by_project_id(project_id, tenant_id=...)``) without
+        the previous O(N) list_all round-trip.
+        """
+        if not filters:
+            return 0
+        if len(filters) == 1:
+            field, value = filters[0]
+            return self.delete_by_filter(field, value)
+        # Multi-predicate fallback. Only used by stores that have not
+        # yet overridden this method (InMemoryStore + non-overridden
+        # future subclasses). For these, list_all IS the data set.
+        survivors: list[Memory] = list(self.list_all(limit=10_000))
+        for field, value in filters:
+            survivors = [
+                m for m in survivors
+                if getattr(m.context, field, None) == value
+            ]
+        if not survivors:
+            return 0
+        deleted = 0
+        for mem in survivors:
+            if self.delete(str(mem.id)):
+                deleted += 1
+        return deleted

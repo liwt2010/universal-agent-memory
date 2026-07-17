@@ -845,29 +845,22 @@ class UniversalMemorySystem(EventHandler):
                     )
             return deleted
 
-        # tenant_id is set — narrow to (project_id, tenant_id) intersection.
-        # Walk survivors and delete those whose tenant_id matches.
+        # tenant_id is set — narrow to (project_id, tenant_id) intersection
+        # via a single multi-predicate query per store. v0.6.0 closes the
+        # P0-1 GDPR hole where the previous implementation loaded every
+        # project_id row into memory and then filtered — which silently
+        # dropped anything past the 999-row list_all cap.
         for store in self._stores.values():
             try:
-                survivors = store.list_all(limit=10000)
+                deleted += store.delete_by_filters(
+                    (("project_id", project_id), ("tenant_id", tenant_id))
+                )
             except Exception:
                 logger.exception(
-                    "delete_by_project_id: list_all failed during tenant filter"
+                    "delete_by_project_id: store failed on "
+                    "project_id=%r tenant_id=%r",
+                    project_id, tenant_id,
                 )
-                continue
-            for mem in survivors:
-                if getattr(mem.context, "project_id", None) != project_id:
-                    continue
-                if getattr(mem.context, "tenant_id", None) != tenant_id:
-                    continue
-                try:
-                    store.delete(str(mem.id))
-                    deleted += 1
-                except Exception:
-                    logger.exception(
-                        "delete_by_project_id: per-row delete failed for %s",
-                        mem.id,
-                    )
         return deleted
 
     def _revoke_by_metadata(

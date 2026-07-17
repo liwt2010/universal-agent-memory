@@ -22,7 +22,7 @@ from uams.utils.embedding_serde import serialize_embedding, deserialize_embeddin
 
 logger = get_logger(__name__)
 
-_SCHEMA_VERSION = 1  # Current schema version for migrations
+_SCHEMA_VERSION = 2  # v2: add tenant_id column for multi-tenant GDPR
 
 # SQLite default SQLITE_MAX_VARIABLE_NUMBER (the cap on bound parameters
 # in a single prepared statement). Values passed to LIMIT clauses via
@@ -102,8 +102,19 @@ class SQLiteStore(MemoryStore):
                 pass
             return
         try:
-            # Rollback any uncommitted transaction before returning
-            conn.execute("ROLLBACK")
+            # Only ROLLBACK if the connection is mid-transaction.
+            # ``conn.in_transaction`` is True iff a BEGIN has been
+            # issued and no COMMIT/ROLLBACK has closed it. The
+            # schema-upgrade path in _ensure_schema commits and then
+            # issues DDL (ALTER / CREATE INDEX) on the same
+            # connection; if we then unconditionally ROLLBACK on
+            # return-to-pool, the schema changes silently disappear.
+            # in_transaction check keeps the old "always rollback"
+            # safety net (so a buggy writer that forgot to commit
+            # doesn't leak an open transaction) while letting clean
+            # paths keep their commit.
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
         except Exception:
             pass
         try:
@@ -151,7 +162,8 @@ class SQLiteStore(MemoryStore):
                     session_id TEXT,
                     user_id TEXT,
                     team_id TEXT,
-                    project_id TEXT
+                    project_id TEXT,
+                    tenant_id TEXT
                 )
             """)
 
@@ -194,6 +206,44 @@ class SQLiteStore(MemoryStore):
                 END
             """)
 
+            # Idempotent column add for upgrades from pre-v0.6.0 DBs
+            # where the table predates the tenant_id column. Run the
+            # PRAGMA detector on a fresh connection because DDL on
+            # `conn` (CREATE TABLE + FTS5 above) is still inside a
+            # transaction — table_info on `conn` would either be
+            # empty or report the old 22-column shape, and any ALTER
+            # we issued here would silently roll back when `conn`
+            # later commits. Commit DDL first, then detect.
+            conn.commit()
+
+            pragma_conn = sqlite3.connect(self._db_path)
+            try:
+                pragma_conn.execute("PRAGMA journal_mode=WAL")
+                pragma_conn.execute("PRAGMA busy_timeout=5000")
+                cols = [
+                    row[1]
+                    for row in pragma_conn.execute(
+                        f"PRAGMA table_info({self._tier_name}_memories)"
+                    ).fetchall()
+                ]
+            finally:
+                pragma_conn.close()
+
+            if cols and "tenant_id" not in cols:
+                logger.info(
+                    "Upgrading %s_memories to add tenant_id column",
+                    self._tier_name,
+                )
+                conn.execute(
+                    f"ALTER TABLE {self._tier_name}_memories "
+                    "ADD COLUMN tenant_id TEXT"
+                )
+            if cols:
+                conn.execute(f"""
+                    CREATE INDEX IF NOT EXISTS idx_{self._tier_name}_tenant
+                    ON {self._tier_name}_memories(tenant_id)
+                """)
+
             conn.commit()
         finally:
             self._return_connection(conn)
@@ -226,8 +276,26 @@ class SQLiteStore(MemoryStore):
         if version == 1:
             # Initial schema - already created by _ensure_schema
             pass
-        # Future migrations: add columns, create new indexes, etc.
-        # Example: if version == 2: conn.execute("ALTER TABLE ... ADD COLUMN ...")
+        if version == 2:
+            # Add tenant_id column for multi-tenant GDPR deletion
+            # (P0-1 from the v0.5.2 audit). ALTER TABLE is idempotent
+            # against newer tables that already have the column; we
+            # catch the duplicate-column error so re-running migrations
+            # is safe.
+            try:
+                conn.execute(
+                    f"ALTER TABLE {self._tier_name}_memories "
+                    "ADD COLUMN tenant_id TEXT"
+                )
+            except Exception as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
+            # Add tenant index if missing (CREATE INDEX IF NOT EXISTS
+            # is the standard idempotent form).
+            conn.execute(f"""
+                CREATE INDEX IF NOT EXISTS idx_{self._tier_name}_tenant
+                ON {self._tier_name}_memories(tenant_id)
+            """)
         logger.info("Applied migration version %d", version)
 
     def _memory_to_row(self, memory: Memory) -> tuple:
@@ -254,6 +322,7 @@ class SQLiteStore(MemoryStore):
             memory.context.user_id,
             memory.context.team_id,
             memory.context.project_id,
+            memory.context.tenant_id,
         )
 
     def _row_to_memory(self, row: tuple) -> Memory:
@@ -263,6 +332,7 @@ class SQLiteStore(MemoryStore):
             importance, confidence, tags_str, categories_str, relations_str,
             provenance_str, agent_id, agent_type, session_id, user_id,
             team_id, project_id,
+            tenant_id,
         ) = row
 
         structured = json.loads(structured_str) if structured_str else None
@@ -289,6 +359,7 @@ class SQLiteStore(MemoryStore):
                 user_id=user_id,
                 team_id=team_id,
                 project_id=project_id,
+                tenant_id=tenant_id,
             ),
             payload=MemoryPayload(
                 raw=raw,
@@ -318,7 +389,7 @@ class SQLiteStore(MemoryStore):
                 conn.execute("BEGIN")
                 conn.execute(f"""
                     INSERT OR REPLACE INTO {self._tier_name}_memories
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, self._memory_to_row(memory))
                 conn.commit()
                 logger.debug("SQLite stored memory %s in tier %s", memory.id, self._tier_name)
@@ -554,7 +625,7 @@ class SQLiteStore(MemoryStore):
         """
         # Whitelist: only top-level context fields are real columns.
         allowed = {"agent_id", "agent_type", "session_id",
-                   "user_id", "team_id", "project_id"}
+                   "user_id", "team_id", "project_id", "tenant_id"}
         if field not in allowed:
             logger.warning(
                 "SQLiteStore.delete_by_filter: field %r not in context "
@@ -579,6 +650,64 @@ class SQLiteStore(MemoryStore):
             except Exception:
                 logger.exception(
                     "SQLite delete_by_filter(%s=%r) failed", field, value,
+                )
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return 0
+            finally:
+                self._return_connection(conn)
+
+    def delete_by_filters(
+        self, filters: tuple[tuple[str, Any], ...]
+    ) -> int:
+        """O(matches) composite delete via single multi-predicate WHERE.
+
+        All keys must be in the same flat-column whitelist as
+        ``delete_by_filter`` (``agent_id``, ``agent_type``,
+        ``session_id``, ``user_id``, ``team_id``, ``project_id``,
+        ``tenant_id``). Anything outside the whitelist is rejected
+        with a warning and the call returns 0.
+
+        This replaces the previous O(rows) list_all round-trip used
+        by ``delete_by_project_id(project_id, tenant_id=...)``, which
+        silently dropped tenants past the 999-row list_all cap and
+        blocked GDPR Article 17 deletion in any non-trivial
+        deployment (P0-1 from the v0.5.2 audit).
+        """
+        allowed = {"agent_id", "agent_type", "session_id",
+                   "user_id", "team_id", "project_id", "tenant_id"}
+        bad = [f for f, _ in filters if f not in allowed]
+        if bad:
+            logger.warning(
+                "SQLiteStore.delete_by_filters: fields %r not in context "
+                "whitelist %s; returning 0",
+                bad, sorted(allowed),
+            )
+            return 0
+        if not filters:
+            return 0
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                where = " AND ".join(f"{f} = ?" for f, _ in filters)
+                params = tuple(v for _, v in filters)
+                cur = conn.execute(
+                    f"DELETE FROM {self._tier_name}_memories WHERE {where}",
+                    params,
+                )
+                conn.commit()
+                deleted = cur.rowcount
+                logger.info(
+                    "SQLite deleted %d memories from %s where %s",
+                    deleted, self._tier_name,
+                    " AND ".join(f"{f}={v!r}" for f, v in filters),
+                )
+                return deleted
+            except Exception:
+                logger.exception(
+                    "SQLite delete_by_filters(%s) failed", filters,
                 )
                 try:
                     conn.rollback()
