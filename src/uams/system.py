@@ -1138,11 +1138,17 @@ class UniversalMemorySystem(EventHandler):
             return []
 
     def clear(self) -> None:
-        """Clear all memories and event history. Use with caution."""
+        """Clear all memories and event history. Use with caution.
+
+        v0.6.0: routes through ``store.truncate()`` instead of
+        ``list_all(limit=999999) + delete()``, which silently
+        dropped everything past the SQLite
+        ``_SQLITE_MAX_VARIABLE_NUMBER`` cap (999) and was O(N)
+        round-trips on every other backend.
+        """
         try:
             for store in self._stores.values():
-                for mem in store.list_all(limit=999999):
-                    store.delete(str(mem.id))
+                store.truncate()
             self._bus.clear()
             with self._session_lock:
                 self._session_events.clear()

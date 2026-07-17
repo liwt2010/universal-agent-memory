@@ -548,6 +548,35 @@ class SQLiteStore(MemoryStore):
         # This is expensive in SQLite. Return keyword match for now.
         return self.search_keywords(entity, k=10)
 
+    def list_all_paginated(
+        self, limit: int = 1000, offset: int = 0
+    ) -> list[Memory]:
+        """True OFFSET-based pagination on SQLite.
+
+        v0.6.0: lets MigrationTool.migrate() walk >999 rows
+        without materialising the whole collection. Uses raw LIMIT
+        + OFFSET (not the clamping path) so callers asking for
+        5000 rows actually get 5000.
+        """
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                cursor = conn.execute(
+                    f"""
+                    SELECT * FROM {self._tier_name}_memories
+                    ORDER BY created_at DESC, id ASC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (int(limit), int(offset)),
+                )
+                rows = cursor.fetchall()
+                return [self._row_to_memory(row) for row in rows]
+            except Exception:
+                logger.exception("SQLite list_all_paginated failed")
+                return []
+            finally:
+                self._return_connection(conn)
+
     def list_all(self, limit: int | None = 100) -> list[Memory]:
         """List memories ordered by created_at DESC.
 
@@ -626,6 +655,38 @@ class SQLiteStore(MemoryStore):
             return 0
         finally:
             self._return_connection(conn)
+
+    def truncate(self) -> int:
+        """O(1) round-trip ``DELETE FROM <table>`` in a single SQL.
+
+        v0.6.0: replaces the inherited O(N) list_all + per-row
+        delete pattern, which silently dropped every row past
+        ``_SQLITE_MAX_VARIABLE_NUMBER`` (999). Critical for
+        ``UniversalMemorySystem.clear()`` and MigrationTool.migrate()
+        on installations with >999 memories.
+        """
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                cur = conn.execute(
+                    f"DELETE FROM {self._tier_name}_memories"
+                )
+                conn.commit()
+                deleted = cur.rowcount
+                logger.info(
+                    "SQLite truncate removed %d memories from %s",
+                    deleted, self._tier_name,
+                )
+                return deleted
+            except Exception:
+                logger.exception("SQLite truncate failed for %s", self._tier_name)
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return 0
+            finally:
+                self._return_connection(conn)
 
     def delete_by_filter(self, field: str, value: Any) -> int:
         """O(matches) delete via indexed WHERE on a flat context column.

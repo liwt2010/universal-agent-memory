@@ -134,22 +134,42 @@ class MigrationTool:
         target: MemoryStore,
         batch_size: int = 1000,
     ) -> int:
-        """Migrate all memories from source to target. Returns count migrated."""
+        """Migrate all memories from source to target. Returns count migrated.
+
+        v0.6.0: uses ``list_all_paginated`` (offset-based) to walk
+        the source in batch_size chunks. The previous implementation
+        ``source.list_all(limit=999999999)`` materialised the entire
+        source collection in memory at once (and silently dropped
+        anything past 999 on SQLite, same root cause as the
+        ``UniversalMemorySystem.clear()`` bug closed in T02).
+        """
         logger.info("Starting migration from %s to %s", type(source).__name__, type(target).__name__)
         total = 0
+        offset = 0
+        consecutive_empty = 0
 
         try:
-            # Get all memories at once (snapshot approach to avoid pagination issues)
-            all_memories = source.list_all(limit=999999999)
-            logger.info("Migration snapshot: %d memories to migrate", len(all_memories))
-
-            for i in range(0, len(all_memories), batch_size):
-                batch = all_memories[i:i + batch_size]
-                for mem in batch:
+            while True:
+                page = source.list_all_paginated(
+                    limit=batch_size, offset=offset
+                )
+                if not page:
+                    consecutive_empty += 1
+                    if consecutive_empty >= 2:
+                        # Defensive: if a store returns empty twice
+                        # in a row, the source is exhausted.
+                        break
+                    offset += batch_size
+                    continue
+                consecutive_empty = 0
+                for mem in page:
                     target.store(mem)
                     total += 1
-                if (i // batch_size) % 10 == 0:
-                    logger.info("Migration progress: %d/%d memories migrated", total, len(all_memories))
+                offset += len(page)
+                if len(page) < batch_size:
+                    # last partial page — source is exhausted
+                    break
+            logger.info("Migration snapshot: %d memories to migrate", total)
         except Exception:
             logger.exception("Migration failed")
 

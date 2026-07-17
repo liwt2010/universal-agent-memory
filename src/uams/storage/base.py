@@ -71,6 +71,27 @@ class MemoryStore(ABC):
         """List all memories (for debugging / admin)."""
         ...
 
+    def list_all_paginated(
+        self, limit: int = 1000, offset: int = 0
+    ) -> list[Memory]:
+        """Pagination-aware variant of list_all.
+
+        v0.6.0: added so ``MigrationTool.migrate()`` and other
+        batch callers don't have to materialise the whole collection
+        in memory at once. Default implementation uses list_all() +
+        in-process offset slicing — safe for stores whose list_all
+        already paginates (Chroma, Neo4j, InMemory, Redis with its
+        own offset logic). Backends that clamp list_all() to a
+        hard cap (SQLite) MUST override this to support true
+        OFFSET-based pagination.
+
+        Returns at most ``limit`` rows starting at ``offset``.
+        """
+        if offset == 0:
+            return self.list_all(limit=limit)
+        all_rows = self.list_all(limit=10_000)
+        return all_rows[offset:offset + limit]
+
     @abstractmethod
     def delete_expired(self) -> int:
         """Delete all memories whose TemporalAnchor has expired. Returns count."""
@@ -100,6 +121,27 @@ class MemoryStore(ABC):
         ``UniversalMemorySystem.get_stats()``.
         """
         ...
+
+    def truncate(self) -> int:
+        """Delete every memory in this tier in a single native
+        operation. v0.6.0 replaces the previous O(N) pattern of
+        ``for mem in list_all(limit=999999): delete(mem.id)`` which
+        silently dropped everything past 999 rows on SQLite
+        (SQLITE_MAX_VARIABLE_NUMBER cap) and was O(N) round-trips
+        on every other backend.
+
+        Returns the count deleted (0 if empty).
+
+        Default implementation: O(N) via list_all + per-row delete,
+        safe for InMemoryStore where the data set is in-process.
+        Backends with native TRUNCATE / DELETE-FROM semantics MUST
+        override for a single round-trip.
+        """
+        deleted = 0
+        for mem in list(self.list_all(limit=10_000)):
+            if self.delete(str(mem.id)):
+                deleted += 1
+        return deleted
 
     @abstractmethod
     def delete_by_filter(self, field: str, value: Any) -> int:
