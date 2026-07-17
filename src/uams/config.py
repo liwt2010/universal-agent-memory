@@ -522,9 +522,17 @@ class UAMSConfig:
             errors.append("postgresql_pool_max must be >= postgresql_pool_min")
 
         # --- LLM Compression ---
-        if self.llm_provider not in ("openai_compatible", "null"):
+        # 'openai_compatible' is the underlying transport; 'ollama' is an
+        # alias for users running local OpenAI-compatible servers (ollama,
+        # vLLM, LM Studio, etc.) — they all speak /v1/chat/completions
+        # so the same OpenAICompatibleClient handles them. Allowing
+        # 'ollama' here matches the documented env-var recipes in
+        # README.md (UAMS_LLM_MODEL=llama3.1 + UAMS_LLM_BASE_URL=
+        # http://localhost:11434/v1).
+        if self.llm_provider not in ("openai_compatible", "null", "ollama"):
             errors.append(
-                f"llm_provider must be openai_compatible|null, got {self.llm_provider!r}"
+                f"llm_provider must be openai_compatible|null|ollama, "
+                f"got {self.llm_provider!r}"
             )
         if self.llm_enabled and not self.llm_api_key:
             errors.append("llm_api_key is required when llm_enabled=True")
