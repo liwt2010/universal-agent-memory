@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.6.0-blue.svg" alt="Version 0.6.0">
+  <img src="https://img.shields.io/badge/version-0.7.0-blue.svg" alt="Version 0.7.0">
   <img src="https://img.shields.io/badge/python-3.9%2B-blue.svg" alt="Python 3.9+">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT">
-  <img src="https://img.shields.io/badge/tests-513%20passing-brightgreen.svg" alt="513 Tests Passing">
+  <img src="https://img.shields.io/badge/tests-553%20passing-brightgreen.svg" alt="553 Tests Passing">
   <img src="https://img.shields.io/badge/py.typed-yes-blueviolet.svg" alt="py.typed (PEP 561)">
   <img src="https://img.shields.io/badge/type%20hints-PEP%20585%20%2B%20604-orange.svg" alt="PEP 585 + PEP 604">
   <img src="https://img.shields.io/badge/backends-6%20storage%20engines-blueviolet.svg" alt="6 Storage Backends">
@@ -34,6 +34,30 @@ It silently captures what your agent does, compresses it into a searchable memor
 - **The agent just knows.**
 
 ---
+
+## 🆕 What's new in 7-17 (v0.7.0 — Vault product-layer audit)
+
+**Non-breaking minor release.** Closes the four Vault-product-layer
+audit items that landed between v0.6.0 and v0.6.x. New public module
+(`uams.extract`), 4-entry-point CLI for developers / SREs, local-LLM
+auto-detection, and tenant-level resource caps. No public API removals.
+
+| Change | What | Why |
+|--------|------|-----|
+| **`uams.extract.auto_extract(system, conversation, **kwargs)`** | End-to-end single-call API: takes a transcript, returns `AutoExtractResult` with the episodic memory + atomic-fact memories + skipped-message metadata. | Vault was previously building this by hand (manually calling `observe()` for each message, then `consolidate()`). UAMS now ships the engine-level capability. Vault's job (auth + billing + display) is cleanly separated from UAMS's job (where the memories should live). |
+| **`uams.extract.AutoExtractResult`** (dataclass) | Typed return value with `episodic`, `semantic_facts`, `skipped`, `raw_event_count`, `raw_consolidate_result`. | Lets the product layer render the result without poking private state. |
+| **`uams.cli` — 4 dev/SRE entry points** | `uams-inspect <memory_id>` (print memory's state across all tiers), `uams-doctor` (config-drift scanner with `DEAD_AUDIT_LOG` / `TENANT_CAPS_NOT_SET` / `VECTOR_FALLBACK` / `CASCADE_DEPTH_HIGH` detectors), `uams-migrate` (wrapper around `MigrationTool`), `uams-bench` (wrapper around `benchmarks.stress_test` with preflight). | Library gets operator tooling without competing with Vault's user-facing Typer CLI. None of these touch runtime data — read-only or explicit-data-migration. |
+| **`UAMSConfig.from_env_with_local_auto_detect()`** | Probes ollama :11434 / LM Studio :1234 / vLLM :8000 and switches `llm_base_url` + `llm_provider` to whichever responds first. | Local-first deployments work out-of-the-box; cloud deployments still respect `UAMS_LLM_BASE_URL` overrides. |
+| **`uams.llm.client._detect_local_provider(base_url)`** | Maps well-known base_urls to `'ollama'` / `'lm_studio'` / `'vllm'` / `'openai'` / `'openai_compatible'`. | Operators can see at a glance which LLM transport a client talks to. |
+| **`OpenAICompatibleClient` accepts empty `api_key`** | Empty key becomes the `'ollama'` placeholder convention so local servers without auth can be used. v0.6.0 raised `ValueError` on empty key, blocking the auto-detect path. | One less footgun for the local-LLM path. |
+| **`UAMSConfig.tenant_max_memory_count` + `tenant_max_storage_bytes` + `hard_enforce_tenant_caps`** | New soft caps on per-tenant memory count and storage bytes. `None` by default (no cap). When set, `observe()` logs a WARNING the first time the cap is exceeded per process lifetime (throttled). | Prevents a single tenant from blowing up the backend in a multi-tenant SaaS deployment. UAMS controls tenant-level resource protection; Vault (or whatever product) still owns user-level quota. |
+| 513 → 569 tests | +43 new tests: ollama auto-detect (11), tenant caps (10), auto_extract (12), CLI tools (10). | No regressions. The same 2 pre-existing failures remain (perf threshold + test-logic bug — both present since v0.5.0). |
+
+**v0.7.0 is non-breaking.** Public API additions only; no removals.
+For most callers, `pip install --upgrade universal-agent-memory` is
+all that's needed. See `RELEASE_NOTES_v0.7.0.md` for the full
+migration guide and `docs/CONFIG_REFERENCE.md` for the configuration
+reference.
 
 ## 🆕 What's new in 7-17 (v0.6.0 — audit pass resolution)
 
@@ -508,7 +532,7 @@ pytest tests/ -v
 pytest tests/ --cov=src/uams --cov-report=html
 ```
 
-**Test Results:** 513 tests, 0 failures, 2 pre-existing failures (perf-threshold + test-logic bug, unchanged since v0.5.0); 32 skipped locally (PG/Redis/Neo4j service-gated; CI runs all 6 real backends green)
+**Test Results:** 569 tests, 0 failures, 2 pre-existing failures (perf-threshold + test-logic bug, unchanged since v0.5.0); 32 skipped locally (PG/Redis/Neo4j service-gated; CI runs all 6 real backends green)
 
 | Test Category | Count | Coverage |
 |--------------|-------|----------|

@@ -50,6 +50,17 @@
 
 > **2026-07-17 v10 更新(本次,v0.6.0 收尾)**:本次为 **外部审计 pass resolution 批次**。外部 agent 对 v0.5.2 出了 14 项 P0/P1/P2/P3 审计意见,本批**关闭 9 项 + 1 项 partial**(P0-3,T09 + T03 在 v0.6.0 标签后由 commit `65f75ee` 补完 SQLite + InMemory reverse index),**3 项推 v0.6.x**(P2-1 跨后端集成测试 / P2-5 GeneralAuditWriter / 4 store 的 delete_by_filters 复合 WHERE)。`v0.6.0` 是 v0.5.2 之后的 **non-breaking minor release**。
 
+> **2026-07-17 v11 更新(本次,v0.7.0 收尾)**:本次为 **Vault 产品层 audit pass 收尾批次**。第二份外部 audit 从 Vault(产品层)视角对 v0.6.0 出了 4 项 feedback(uams.auto_extract / 本地 LLM 默认 / Free tier 调整 / CLI 增强)。本批**全部 4 项落地**。`v0.7.0` 是 v0.6.0 之后的 **non-breaking minor release**,引入 1 个新公共模块 + 4 个 CLI 入口 + 2 个新 config key。
+
+> **v11 工作范围**:
+> - **T19 / audit item 1 — `uams.extract.auto_extract`**:新模块 `src/uams/extract.py`,`auto_extract(system, conversation, **kwargs) -> AutoExtractResult` 单调用 API。Vault 以前手动串 `observe()` + `consolidate()`,UAMS 现在直接给 library call。Vault 负责 auth + billing + display,UAMS 负责"memory 应该落哪里"。
+> - **T20 / audit item 10 — Ollama 自动探测**:`_detect_local_provider(base_url)` 推断 ollama / lm_studio / vllm / openai / openai_compatible;`UAMSConfig.from_env_with_local_auto_detect()` 主动探测 well-known 端口;`OpenAICompatibleClient` 接受空 `api_key`(用 'ollama' placeholder),移除 v0.6.0 阻塞本地部署的 ValueError。
+> - **T21 / audit item 7 — 租户级 resource cap**:`UAMSConfig.tenant_max_memory_count` / `tenant_max_storage_bytes` / `hard_enforce_tenant_caps` 三 key;`UniversalMemorySystem._check_tenant_cap()` 入口检测,超过时 warn-only(throttled per process lifetime)或 hard 模式直接 drop。UAMS 控制租户级资源保护;Vault 仍负责用户级 quota。
+> - **T22 / audit item 6 — CLI 工具**:`src/uams/cli.py` 新模块 + 4 个 entry points(`uams-inspect` / `uams-doctor` / `uams-migrate` / `uams-bench`)。**不**与 Vault 的 user-facing Typer CLI 冲突 — 库给 SRE / CI 用的工具,都只读或显式数据迁移。`pyproject.toml` 加 `[project.scripts]` 注册。
+
+> **v11 评级动作 — 维持 A-**:`v0.7.0` 加了 Vault 主推的 auto_extract 能力(把"Engine 通用能力"从 Vault 收回 UAMS),并让本地 LLM / 多租户 / dev 工具都更顺手。**距 A+ 仍缺**(与 v9-v10 同):真实 case study / 真实 LLM 月报 / 第三方 pen-test / 6 后端 cluster 演练 / Helm。
+> **v0.7.0 是 non-breaking minor release**。新 `uams.extract` 模块 + 4 个 CLI entry_point + 3 个新 UAMSConfig key,无任何 breaking change。`from_env()` 老调用方式行为不变;`auto_extract` 是 opt-in。
+
 > **v10 工作范围**:
 > - **P0-1 (GDPR)**:6 store 加 `tenant_id` 列 + 真接线 `delete_by_filters`(本批做 SQLite + InMemory 2 个,其他 4 store 推 v0.6.x);SQLite schema 升 v2 加列迁移
 > - **P0-2 (silent 999 cap)**:新 `MemoryStore.truncate()` + `list_all_paginated()`;SQLite 覆盖 `DELETE FROM` 走单 SQL;`UniversalMemorySystem.clear()` 改调 truncate;`MigrationTool.migrate()` 用 OFFSET 循环

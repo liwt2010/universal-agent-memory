@@ -116,6 +116,19 @@ receipt = {
 
 ---
 
+## 🆕 7-17 新增（v0.7.0 — Vault 產品層稽核收尾）
+
+**Non-breaking minor release**,關閉 v0.6.0 與 v0.6.x 之間 Vault 產品層 4 項 audit 反饋。新增公共模組 `uams.extract` + 4 個 CLI 入口(開發者/SRE 工具)+ 本機 LLM 自動探測 + 租戶級資源上限。無公開 API 移除。
+
+| 改動 | 內容 | 原因 |
+|------|------|------|
+| **`uams.extract.auto_extract`** | 端到端單呼叫 API | Vault 以前需手動串 observe + consolidate,UAMS 直接給 library call |
+| **`uams.extract.AutoExtractResult`** dataclass | typed 返回值 | 產品層渲染時不需碰私有狀態 |
+| **`uams.cli` 4 個 dev/SRE 入口** | uams-inspect / uams-doctor / uams-migrate / uams-bench | 各司其職,只讀或顯式資料遷移 |
+| **`UAMSConfig.from_env_with_local_auto_detect()`** | 自動探測 ollama / LM Studio / vLLM | local-first 部署開箱即用 |
+| **`UAMSConfig.tenant_max_*_caps`** | 租戶級軟 cap,預設 None 不限 | 防止 SaaS 多租戶單租戶撐爆後端 |
+| 513 → 553 測試 | +40 新測試 | 無回歸;2 個 pre-existing failure 仍在 |
+
 ## 🆕 7-17 新增（v0.6.0 — 稽核 pass 收尾）
 
 **Non-breaking minor release**,關閉 v0.5.2 外部稽核 14 項中的 9 項。新 API、新例外族、1 個 schema 遷移（SQLite 舊 DB 自動套用）。完整遷移指南見 `RELEASE_NOTES_v0.6.0.md`。

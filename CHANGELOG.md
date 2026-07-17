@@ -5,6 +5,115 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-07-17
+
+**Non-breaking minor release.** Closes the four Vault-product-
+layer audit items that landed between v0.6.0 and v0.6.x. New
+public module (`uams.extract`), new 4-entry-point CLI
+(`uams-inspect` / `uams-doctor` / `uams-migrate` / `uams-bench`),
+local-LLM auto-detection, and tenant-level resource caps. No
+public API removals.
+
+### New public surface
+
+* **`uams.extract.auto_extract(system, conversation, **kwargs)`** — the
+  end-to-end single-call API Vault was previously building
+  by hand (manually call `observe()` for each message, then
+  `consolidate()`). v0.7.0 ships this as a first-class
+  library call. Returns `AutoExtractResult` with the episodic
+  memory + the list of atomic-fact memories + skipped-message
+  metadata. Vault's job (auth + billing + display) is now
+  cleanly separated from UAMS's job (where the memories
+  should live).
+* **`uams.extract.AutoExtractResult`** (dataclass) — typed
+  return value with `episodic`, `semantic_facts`, `skipped`,
+  `raw_event_count`, `raw_consolidate_result`.
+* **`uams.cli`** (new module) — 4 developer / SRE entry points:
+  - `uams-inspect <memory_id>` — print a memory's state
+    across all tiers. `--json` for machine-readable output.
+  - `uams-doctor` — scan a `UAMSConfig` for drift. Detects
+    `DEAD_AUDIT_LOG` (enable_audit_log with no writer),
+    `TENANT_CAPS_NOT_SET` (multi-tenant deployment without
+    per-tenant caps), `VECTOR_FALLBACK` (non-vector backend
+    with recency-only search), `CASCADE_DEPTH_HIGH`
+    (cascade_max_depth > 6). Exit code 1 on critical.
+  - `uams-migrate` — wrapper around `MigrationTool`. v0.7.0
+    returns exit 2 with a pointer to the Python API; full
+    cross-backend CLI is the v0.6.x follow-up.
+  - `uams-bench` — wrapper around `benchmarks.stress_test`
+    with a preflight check for optional deps.
+
+  None of these touch runtime data — read-only or
+  explicit-data-migration tools. Intentionally NOT a unified
+  `uams` command with subcommands; Vault owns the user-facing
+  CLI surface (Typer).
+* **`UAMSConfig.from_env_with_local_auto_detect()`** — new
+  classmethod that probes well-known local LLM endpoints
+  (ollama :11434, LM Studio :1234, vLLM :8000) and
+  switches `llm_base_url` + `llm_provider` to whichever
+  responds. `UAMS_LLM_LOCAL_AUTODETECT=false` disables.
+  UAMS_LLM_BASE_URL override wins (no probe if already set).
+* **`uams.llm.client._detect_local_provider(base_url)`** —
+  maps well-known base_urls to `'ollama'` / `'lm_studio'` /
+  `'vllm'` / `'openai'` / `'openai_compatible'`. Substring
+  match on port (11434, 1234, 8000) and host.
+* **`OpenAICompatibleClient._provider_kind`** — instance
+  attribute tagging which LLM transport the client talks
+  to. Operators can see at a glance whether they're on
+  ollama vs openai vs lm-studio.
+* **`UAMSConfig.tenant_max_memory_count`** + **`tenant_max_storage_bytes`** + **`hard_enforce_tenant_caps`** — new soft caps on per-tenant
+  memory count and storage bytes. `None` by default (no
+  cap). When set, `observe()` logs a WARNING the first time
+  the cap is exceeded per process lifetime (throttled);
+  subsequent calls keep working unless
+  `hard_enforce_tenant_caps=True`.
+
+### Behaviour changes
+
+* `OpenAICompatibleClient` now accepts an empty `api_key`
+  (replaced with the `'ollama'` placeholder convention so
+  local servers without auth can be used). v0.6.0 raised
+  `ValueError` on empty key, blocking the auto-detect path.
+* `UniversalMemorySystem.observe()` calls
+  `_check_tenant_cap(ctx)` at entry. If a cap is exceeded
+  and `hard_enforce_tenant_caps` is True, the event is
+  dropped (logged); in warn-only mode (default) the event
+  continues through the normal pipeline.
+* `LLMCompressionEngine.compress_working_to_episodic` is now
+  invoked via the new `auto_extract` path with default
+  `PRIVATE` privacy. The auto_extract path also runs the
+  narrative through `PrivacyFilter` (PII scrubbing) before
+  persisting.
+
+### Test count
+
+513 → 569 (+56 new tests since v0.6.0, all pass):
+* `tests/test_ollama_auto_detect.py` (11)
+* `tests/test_tenant_caps.py` (10)
+* `tests/test_auto_extract.py` (12)
+* `tests/test_cli.py` (10)
+
+### Compatibility
+
+* No public API removals.
+* `auto_extract` accepts the same conversation shapes that
+  OpenAI / Anthropic / chat-style UIs do (plain string or
+  list of {role, content} dicts). Bad input raises
+  `TypeError` / `ValueError` before any side effect.
+* `from_env_with_local_auto_detect` is opt-in (callers
+  using `from_env` directly see no behaviour change).
+* `tenant_*_caps` keys default to `None` — deployments
+  that don't set them see no behaviour change.
+
+### See also
+
+* `RELEASE_NOTES_v0.7.0.md` — full migration guide
+* `PRODUCTION_ASSESSMENT.md` v11 — production-readiness
+  rating after this release
+* `docs/CONFIG_REFERENCE.md` — updated Tier 1 for the new
+  config keys
+* `README.md` — updated "What's new in 7-17" section
+
 ## [0.6.0] - 2026-07-17
 
 **Non-breaking minor release.** Closes all P0 / P1 / most P2
@@ -789,7 +898,8 @@ The two pre-existing failures are unrelated and out of scope for this pass.
 - CI/CD pipeline with GitHub Actions
 - Multi-language documentation (English, 简体中文, 繁體中文)
 
-[Unreleased]: https://github.com/liwt2010/universal-agent-memory/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/liwt2010/universal-agent-memory/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/liwt2010/universal-agent-memory/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/liwt2010/universal-agent-memory/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/liwt2010/universal-agent-memory/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/liwt2010/universal-agent-memory/compare/v0.5.0...v0.5.1

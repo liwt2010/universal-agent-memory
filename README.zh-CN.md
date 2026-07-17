@@ -116,6 +116,21 @@ receipt = {
 
 ---
 
+## 🆕 7-17 新增（v0.7.0 — Vault 产品层审计收尾）
+
+**Non-breaking minor release**,关闭 v0.6.0 与 v0.6.x 之间的 Vault 产品层 4 项 audit 反馈。新增公共模块 `uams.extract` + 4 个 CLI 入口(开发者/SRE 工具)+ 本地 LLM 自动探测 + 租户级资源上限。无公开 API 移除。完整迁移指南见 `RELEASE_NOTES_v0.7.0.md`。
+
+| 改动 | 内容 | 原因 |
+|------|------|------|
+| **`uams.extract.auto_extract(system, conversation, **kwargs)`** | 端到端单调用 API:接收 transcript,返回 `AutoExtractResult`(episodic memory + atomic-fact memories + skipped metadata) | Vault 以前需要手动串 `observe()` + `consolidate()`,UAMS 现在直接给一个 library call。Vault 负责 auth + billing + display,UAMS 负责"memory 应该落哪里" |
+| **`uams.extract.AutoExtractResult`** dataclass | typed 返回值,字段 `episodic` / `semantic_facts` / `skipped` / `raw_event_count` / `raw_consolidate_result` | 产品层渲染时不需要碰私有状态 |
+| **`uams.cli` 4 个 dev/SRE 入口** | `uams-inspect` / `uams-doctor` / `uams-migrate` / `uams-bench`,各司其职 | 库给运维者发工具,不与 Vault 的 Typer 用户 CLI 抢;都只读或显式数据迁移 |
+| **`UAMSConfig.from_env_with_local_auto_detect()`** | 探测 ollama :11434 / LM Studio :1234 / vLLM :8000 自动切换 `llm_base_url` | local-first 部署开箱即用;云端部署尊重 `UAMS_LLM_BASE_URL` 覆盖 |
+| **`uams.llm.client._detect_local_provider(base_url)`** | 根据 base_url 推断 ollama / lm_studio / vllm / openai / openai_compatible | 操作员一眼看出 client 走哪个 LLM transport |
+| **`OpenAICompatibleClient` 接受空 `api_key`** | 空 key 变 `'ollama'` placeholder,v0.6.0 raise ValueError 阻塞 auto-detect 路径 | local-LLM path 又少一个坑 |
+| **`UAMSConfig.tenant_max_memory_count` / `tenant_max_storage_bytes` / `hard_enforce_tenant_caps`** | 租户级软 cap,默认 `None` 不限;`observe()` 入口检测,超过时 warn-only(或 hard 模式直接 drop) | 防止 SaaS 多租户部署中一个租户撑爆后端 |
+| 513 → 553 测试 | +40 新测试:ollama 自动探测(11) / 租户 cap(10) / auto_extract(12) / CLI 工具(10) | 无回归;2 个 pre-existing failure 仍在(`test_large_chinese_text` perf / `test_shutdown_persists_working` test-logic) |
+
 ## 🆕 7-17 新增（v0.6.0 — 审计 pass 收尾）
 
 **Non-breaking minor release**,关闭 v0.5.2 外部审计 14 项中的 9 项。新 API、新异常族、1 个 schema 迁移(SQLite 旧库自动应用)。完整迁移指南见 `RELEASE_NOTES_v0.6.0.md`。
@@ -534,7 +549,7 @@ python tests/test_system.py
 | **6 后端真实验证(CI 9/9 green)** | **PG / ChromaDB / Redis / Neo4j / SQLite / InMemory 全部真实 service 跑通** |
 | **级联删除** | **三策略 + visit-set + 最大深度上限 + 跨层隔离 + 最佳努力删除 + JSONL 审计** |
 
-**测试规模**:513 测试(本地 32 skip:无 PG/Redis/Neo4j service 时跳过真实后端;CI 上全部跑通)。
+**测试规模**:553 测试(本地 32 skip:无 PG/Redis/Neo4j service 时跳过真实后端;CI 上全部跑通)。
 
 ---
 
