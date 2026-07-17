@@ -19,6 +19,46 @@ from uams.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
+def _chroma_row_to_memory(
+    memory_id: str,
+    meta: dict,
+    doc: str,
+    embedding: Any | None = None,
+) -> Memory:
+    """Shared row → Memory conversion used by both retrieve() and
+    list_all(). Pulled out in v0.6.0 so list_all() pagination can
+    reuse the same metadata → dataclass mapping without copy-paste.
+    """
+    return Memory(
+        id=MemoryId(memory_id),
+        anchor=TemporalAnchor(
+            created_at=meta.get("created_at", 0),
+            accessed_at=meta.get("accessed_at") if meta.get("accessed_at") else None,
+            expires_at=meta.get("expires_at") if meta.get("expires_at") else None,
+        ),
+        context=AgentContext(
+            agent_id=meta.get("agent_id", "unknown"),
+            agent_type=meta.get("agent_type", "unknown"),
+            session_id=meta.get("session_id", "unknown"),
+            user_id=meta.get("user_id") or None,
+            team_id=meta.get("team_id") or None,
+            project_id=meta.get("project_id") or None,
+        ),
+        payload=MemoryPayload(
+            raw=doc,
+            embedding=embedding,
+        ),
+        metadata=MemoryMetadata(
+            memory_type=MemoryType[meta.get("memory_type", "SEMANTIC")],
+            privacy=PrivacyLevel[meta.get("privacy", "PUBLIC")],
+            importance=meta.get("importance", 5.0),
+            confidence=meta.get("confidence", 1.0),
+            tags=set(meta.get("tags", "").split(",")) if meta.get("tags") else set(),
+            categories=set(meta.get("categories", "").split(",")) if meta.get("categories") else set(),
+        ),
+    )
+
+
 class ChromaDBStore(MemoryStore):
     """
     ChromaDB-backed storage for vector similarity search.
@@ -81,41 +121,13 @@ class ChromaDBStore(MemoryStore):
             )
             if not results or not results["ids"] or not results["ids"][0]:
                 return None
-            
+
             meta = results["metadatas"][0]
             doc = results["documents"][0]
             emb = results.get("embeddings", [None])[0]
             # chromadb 1.x returns numpy ndarray; callers expect list[float]
             embedding = emb.tolist() if emb is not None and hasattr(emb, "tolist") else emb
-
-            return Memory(
-                id=MemoryId(memory_id),
-                anchor=TemporalAnchor(
-                    created_at=meta.get("created_at", 0),
-                    accessed_at=meta.get("accessed_at") if meta.get("accessed_at") else None,
-                    expires_at=meta.get("expires_at") if meta.get("expires_at") else None,
-                ),
-                context=AgentContext(
-                    agent_id=meta.get("agent_id", "unknown"),
-                    agent_type=meta.get("agent_type", "unknown"),
-                    session_id=meta.get("session_id", "unknown"),
-                    user_id=meta.get("user_id") or None,
-                    team_id=meta.get("team_id") or None,
-                    project_id=meta.get("project_id") or None,
-                ),
-                payload=MemoryPayload(
-                    raw=doc,
-                    embedding=embedding,
-                ),
-                metadata=MemoryMetadata(
-                    memory_type=MemoryType[meta.get("memory_type", "SEMANTIC")],
-                    privacy=PrivacyLevel[meta.get("privacy", "PUBLIC")],
-                    importance=meta.get("importance", 5.0),
-                    confidence=meta.get("confidence", 1.0),
-                    tags=set(meta.get("tags", "").split(",")) if meta.get("tags") else set(),
-                    categories=set(meta.get("categories", "").split(",")) if meta.get("categories") else set(),
-                ),
-            )
+            return _chroma_row_to_memory(memory_id, meta, doc, embedding)
         except Exception:
             logger.exception("ChromaDB retrieve failed for %s", memory_id)
             return None
@@ -228,7 +240,49 @@ class ChromaDBStore(MemoryStore):
         return []
 
     def list_all(self, limit: int = 100) -> list[Memory]:
-        return []
+        """Streamed pagination over the underlying Chroma collection.
+
+        v0.6.0: previously this was a stub that returned [].
+        The fix uses ``collection.get(include=['metadatas','documents'],
+        limit=batch, offset=offset)`` and walks in batch_size=500
+        chunks until either ``limit`` rows are returned or the
+        collection is exhausted. The previous behaviour silently
+        broke ``delete_by_project_id`` (cascade), cascade in-edge
+        discovery, and ``MigrationTool.migrate()`` on ChromaDB —
+        GDPR Article 17 deletion was a no-op on this backend.
+        """
+        if self._collection is None:
+            return []
+        results: list[Memory] = []
+        batch = 500
+        offset = 0
+        try:
+            while len(results) < limit:
+                kwargs: dict[str, Any] = {
+                    "include": ["metadatas", "documents"],
+                    "limit": batch,
+                    "offset": offset,
+                }
+                batch_resp = self._collection.get(**kwargs)
+                ids = batch_resp.get("ids") or []
+                metadatas = batch_resp.get("metadatas") or []
+                documents = batch_resp.get("documents") or []
+                if not ids:
+                    break
+                for i, mid in enumerate(ids):
+                    meta = metadatas[i] if i < len(metadatas) else {}
+                    doc = documents[i] if i < len(documents) else ""
+                    results.append(_chroma_row_to_memory(mid, meta, doc))
+                    if len(results) >= limit:
+                        break
+                if len(ids) < batch:
+                    # last page
+                    break
+                offset += batch
+            return results
+        except Exception:
+            logger.exception("ChromaDB list_all failed")
+            return results  # partial is better than empty
 
     def delete_expired(self) -> int:
         # ChromaDB doesn't have TTL natively; implement via metadata filtering
