@@ -130,19 +130,15 @@ class CascadeForgetter:
     def _locate_tier(self, memory_id: str) -> MemoryType | None:
         """Find the tier that holds `memory_id`, or None if absent.
 
-        Tries retrieve() on each tier in declaration order. Treats
-        exceptions as "not found" so a partially-degraded backend
-        doesn't poison the cascade — but logs each failure at ERROR
-        so a real backend fault (disk full, pool exhausted, auth
-        failure, schema mismatch) isn't silently misclassified as
-        "this memory doesn't exist". Without this log, an operator
-        looking at `CascadeReport.is_complete = True` could conclude
-        the deletion succeeded when in fact the tier never even
-        answered.
+        v0.6.x: delegates to ``store.find_tier`` on every store.
+        Each store does one targeted lookup (O(1) on stores with
+        a primary-key index, O(matches) on the in-memory fallback).
+        Errors are logged at ERROR and treated as not-found so a
+        partially-degraded backend doesn't poison the cascade.
         """
         for tier, store in self._stores.items():
             try:
-                if store.retrieve(memory_id) is not None:
+                if store.find_tier(memory_id):
                     return tier
             except Exception as exc:
                 logger.error(
@@ -162,28 +158,48 @@ class CascadeForgetter:
         """Return list of (source_memory_id, source_tier) referencing target_id.
 
         Modes (per spec sec 7):
-          'scan'  O(N) walk all stores via list_all, filter on relations.
-          'index' Use store._reverse_index() if available, else empty.
-          'auto'  Try index per-store; fall back to scan per-store.
+          'scan'  O(N) walk all stores via in_edges_scan.
+          'index' Use store.in_edges() per-store. Stores that don't
+                  maintain a reverse index (has_reverse_index=False)
+                  return [] — index mode is strict-by-default, the
+                  operator has opted into the index path.
+          'auto'  Per-store: try in_edges() first if the store has
+                  a reverse index; fall back to in_edges_scan().
+
+        v0.6.x: routes through the new ``store.in_edges()`` /
+        ``store.in_edges_scan()`` / ``store.has_reverse_index``
+        MemoryStore API. Stores that maintain a reverse index
+        (InMemoryStore, SQLiteStore) get O(1) per in-edge query.
+        Other stores fall back to the O(N) scan automatically in
+        'auto' mode.
         """
         mode = mode or self._config.cascade_in_edge_strategy
         results: list[tuple[str, MemoryType]] = []
 
         for t, store in self._stores.items():
             if mode == "index":
-                rev = getattr(store, "_reverse_index", None)
-                if rev:
-                    sources = rev.get(target_id) or []
-                    results.extend((s, t) for s in sources)
+                # Strict: only use the maintained reverse index.
+                # Stores without one return [] (per the base
+                # MemoryStore.in_edges default).
+                sources = store.in_edges(target_id)
+                results.extend((s, t) for s in sources)
             elif mode == "scan":
-                results.extend(self._scan_in_edges_for_store(store, target_id, t))
+                results.extend(
+                    (s, t) for s in store.in_edges_scan(target_id)
+                )
             elif mode == "auto":
-                rev = getattr(store, "_reverse_index", None)
-                if rev is not None:
-                    sources = rev.get(target_id) or []
-                    results.extend((s, t) for s in sources)
+                if getattr(store, "has_reverse_index", False):
+                    sources = store.in_edges(target_id)
+                    if sources:
+                        results.extend((s, t) for s in sources)
+                    else:
+                        # Has an index but the target has no
+                        # in-edges here. Trust the index.
+                        pass
                 else:
-                    results.extend(self._scan_in_edges_for_store(store, target_id, t))
+                    results.extend(
+                        (s, t) for s in store.in_edges_scan(target_id)
+                    )
             else:
                 raise ValueError(
                     f"Unknown cascade_in_edge_strategy: {mode!r} "

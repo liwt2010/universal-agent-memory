@@ -38,7 +38,14 @@ class SQLiteStore(MemoryStore):
     Supports full-text search via FTS5 virtual table.
     Uses connection pool to avoid creating connections per operation.
     All writes are atomic transactions.
+
+    Maintains a ``<tier>_incoming`` reverse index for O(1) cascade
+    in-edge discovery. vector_search_capable stays False (no native
+    cosine similarity; falls back to recency + INFO log).
     """
+
+    vector_search_capable = False
+    has_reverse_index = True
 
     def __init__(self, db_path: str = "uams.db", tier_name: str = "memory", pool_size: int = 8):
         # Default pool_size=8 to support 1 serialized writer + multiple concurrent readers
@@ -165,6 +172,24 @@ class SQLiteStore(MemoryStore):
                     project_id TEXT,
                     tenant_id TEXT
                 )
+            """)
+
+            # v0.6.x: reverse index for O(1) cascade in-edge
+            # discovery. Maps target_memory_id -> source_memory_id.
+            # Populated by store() / delete() (no triggers — the
+            # two methods that touch this table are the only
+            # writers and we want explicit control over
+            # transaction boundaries).
+            conn.execute(f"""
+                CREATE TABLE IF NOT EXISTS {self._tier_name}_incoming (
+                    target_id TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    PRIMARY KEY (target_id, source_id)
+                )
+            """)
+            conn.execute(f"""
+                CREATE INDEX IF NOT EXISTS idx_{self._tier_name}_incoming_target
+                ON {self._tier_name}_incoming(target_id)
             """)
 
             # Indexes for common queries
@@ -387,10 +412,30 @@ class SQLiteStore(MemoryStore):
             conn = self._get_connection()
             try:
                 conn.execute("BEGIN")
+                # If we're overwriting, drop the old reverse-index
+                # entries for the previous relations first so
+                # stale edges don't accumulate.
+                old = self.retrieve(str(memory.id))
+                if old is not None:
+                    for rel in old.metadata.relations:
+                        conn.execute(
+                            f"DELETE FROM {self._tier_name}_incoming "
+                            "WHERE target_id = ? AND source_id = ?",
+                            (rel.target_memory_id, str(memory.id)),
+                        )
                 conn.execute(f"""
                     INSERT OR REPLACE INTO {self._tier_name}_memories
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, self._memory_to_row(memory))
+                # v0.6.x: maintain reverse index for cascade
+                # in-edge discovery. INSERT OR IGNORE makes this
+                # idempotent against retries.
+                for rel in memory.metadata.relations:
+                    conn.execute(
+                        f"INSERT OR IGNORE INTO {self._tier_name}_incoming "
+                        "(target_id, source_id) VALUES (?, ?)",
+                        (rel.target_memory_id, str(memory.id)),
+                    )
                 conn.commit()
                 logger.debug("SQLite stored memory %s in tier %s", memory.id, self._tier_name)
             except Exception:
@@ -450,6 +495,17 @@ class SQLiteStore(MemoryStore):
                     f"DELETE FROM {self._tier_name}_memories WHERE id = ?",
                     (memory_id,)
                 )
+                # v0.6.x: clean reverse-index entries where this
+                # memory was the source. In-edges FROM other
+                # memories to this one are removed in delete_expired
+                # / cascade via the in_edges() return path; for
+                # a plain delete we only need to clear outgoing
+                # edges that this memory contributed.
+                conn.execute(
+                    f"DELETE FROM {self._tier_name}_incoming "
+                    "WHERE source_id = ?",
+                    (memory_id,),
+                )
                 conn.commit()
                 return cursor.rowcount > 0
             except Exception:
@@ -459,6 +515,27 @@ class SQLiteStore(MemoryStore):
                 except Exception:
                     pass
                 return False
+            finally:
+                self._return_connection(conn)
+
+    def in_edges(self, target_id: str) -> list[str]:
+        """O(1) cascade in-edge query against the maintained
+        ``<tier>_incoming`` reverse index. Single indexed SELECT.
+        """
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                cursor = conn.execute(
+                    f"SELECT source_id FROM {self._tier_name}_incoming "
+                    "WHERE target_id = ?",
+                    (target_id,),
+                )
+                return [row[0] for row in cursor.fetchall()]
+            except Exception:
+                logger.exception(
+                    "SQLite in_edges(%s) failed; returning empty", target_id,
+                )
+                return []
             finally:
                 self._return_connection(conn)
 
@@ -526,7 +603,7 @@ class SQLiteStore(MemoryStore):
             "falling back to recency-ordered retrieval (k=%d, tier=%s). "
             "Consider switching to ChromaDB or InMemoryStore for "
             "cosine similarity.",
-            k, self._tier_name,
+            k, getattr(self, "_tier_name", "unknown"),
         )
         conn = self._get_connection()
         try:
@@ -668,6 +745,13 @@ class SQLiteStore(MemoryStore):
         with self._lock:
             conn = self._get_connection()
             try:
+                # v0.6.x: clear the reverse index too so a later
+                # cascade run on a fresh store doesn't see stale
+                # in-edges. DELETE FROM with no WHERE is O(1) on
+                # SQLite's B-tree for a small table.
+                conn.execute(
+                    f"DELETE FROM {self._tier_name}_incoming"
+                )
                 cur = conn.execute(
                     f"DELETE FROM {self._tier_name}_memories"
                 )

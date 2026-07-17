@@ -47,22 +47,40 @@ class InMemoryStore(MemoryStore):
     """
 
     vector_search_capable = True
+    has_reverse_index = True
 
     def __init__(self, max_capacity: int = 10000):
         self._max_capacity = max_capacity
         self._memories: OrderedDict[str, Memory] = OrderedDict()
         self._keyword_index: dict[str, set[str]] = defaultdict(set)
+        # v0.6.x: reverse index for O(1) cascade in-edge discovery.
+        # Maps target_memory_id -> set of source_memory_ids that
+        # reference it. Maintained on store() / delete() so a
+        # cascade BIDIRECTIONAL in-edge query is O(1) per target
+        # instead of O(N) per list_all scan.
+        self._reverse_index: dict[str, set[str]] = defaultdict(set)
         self._lock = threading.RLock()
 
     def store(self, memory: Memory) -> None:
         with self._lock:
             mid = str(memory.id)
+            # If we're overwriting an existing memory, drop its
+            # old relations from the reverse index first.
+            old = self._memories.get(mid)
+            if old is not None:
+                for rel in old.metadata.relations:
+                    self._reverse_index[rel.target_memory_id].discard(mid)
             # LRU eviction if at capacity
             if mid not in self._memories and len(self._memories) >= self._max_capacity:
                 evicted_mid, _ = self._memories.popitem(last=False)  # oldest
                 # Remove from keyword index
                 for token_set in self._keyword_index.values():
                     token_set.discard(evicted_mid)
+                # Remove from reverse index
+                ev = self._memories.get(evicted_mid)
+                if ev is not None:
+                    for rel in ev.metadata.relations:
+                        self._reverse_index[rel.target_memory_id].discard(evicted_mid)
                 logger.debug("LRU evicted memory %s (capacity=%d)", evicted_mid, self._max_capacity)
             self._memories[mid] = memory
             self._memories.move_to_end(mid)  # mark as recently used
@@ -70,6 +88,9 @@ class InMemoryStore(MemoryStore):
             tokens = self._tokenize(doc)
             for token in tokens:
                 self._keyword_index[token].add(mid)
+            # Update reverse index
+            for rel in memory.metadata.relations:
+                self._reverse_index[rel.target_memory_id].add(mid)
 
     def retrieve(self, memory_id: str) -> Memory | None:
         with self._lock:
@@ -83,10 +104,27 @@ class InMemoryStore(MemoryStore):
         with self._lock:
             if memory_id not in self._memories:
                 return False
+            mem = self._memories[memory_id]
+            # Clean reverse-index entries for outgoing relations
+            for rel in mem.metadata.relations:
+                self._reverse_index[rel.target_memory_id].discard(memory_id)
+                # Tidy up empty sets so the dict doesn't grow forever
+                if not self._reverse_index[rel.target_memory_id]:
+                    del self._reverse_index[rel.target_memory_id]
             del self._memories[memory_id]
             for token_set in self._keyword_index.values():
                 token_set.discard(memory_id)
             return True
+
+    def in_edges(self, target_id: str) -> list[str]:
+        """O(1) cascade in-edge lookup against the maintained
+        reverse index. Falls back to a list_all scan if the
+        caller asks about a target whose entry has been pruned
+        (defence-in-depth — should not normally happen because
+        store()/delete() maintain the index).
+        """
+        with self._lock:
+            return list(self._reverse_index.get(target_id, set()))
 
     def search_keywords(self, query: str, k: int = 10) -> list[Memory]:
         """Simple TF-like scoring: count matching tokens."""

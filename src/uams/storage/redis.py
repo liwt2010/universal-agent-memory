@@ -465,7 +465,7 @@ class RedisStore(MemoryStore):
             "falling back to recency-ordered retrieval (k=%d, tier=%s). "
             "Consider switching to ChromaDB or InMemoryStore for "
             "cosine similarity.",
-            k, self._tier_name,
+            k, getattr(self, "_tier_name", "unknown"),
         )
         return self._recent_memories(k)
 

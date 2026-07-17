@@ -441,7 +441,7 @@ class PostgreSQLStore(MemoryStore):
             "PostgreSQLStore.search_vector has no native vector search; "
             "falling back to recency-ordered retrieval (k=%d, tier=%s). "
             "Install pgvector or switch to ChromaDB for cosine similarity.",
-            k, self._tier_name,
+            k, getattr(self, "_tier_name", "unknown"),
         )
         return self._recent_memories(k)
 

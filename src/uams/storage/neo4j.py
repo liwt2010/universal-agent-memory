@@ -362,7 +362,7 @@ class Neo4jStore(MemoryStore):
             "falling back to recency-ordered retrieval (k=%d, tier=%s). "
             "Install a vector plugin or switch to ChromaDB for "
             "cosine similarity.",
-            k, self._tier_name,
+            k, getattr(self, "_tier_name", "unknown"),
         )
         return self._recent_memories(k)
 

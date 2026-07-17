@@ -205,3 +205,73 @@ class MemoryStore(ABC):
             if self.delete(str(mem.id)):
                 deleted += 1
         return deleted
+
+    # ------------------------------------------------------------------
+    # v0.6.x additions — used by CascadeForgetter to avoid
+    # per-tier retrieve() sweeps (P1-5) and per-tier list_all() scans
+    # for in-edge discovery (P0-3). Stores that don't yet implement
+    # these should leave the abstract at the default and accept the
+    # O(N) fallback; stores that do implement them get O(1) per
+    # memory-id lookup / O(1) per in-edge query.
+    # ------------------------------------------------------------------
+
+    def find_tier(self, memory_id: str) -> bool:
+        """Return True if this store contains ``memory_id``.
+
+        v0.6.x: replaces the v0.5.x ``CascadeForgetter._locate_tier``
+        pattern of ``for tier, store in self._stores.items():
+        store.retrieve(memory_id)`` which issued N round-trips per
+        cascade call. Default fallback is a single ``retrieve()``
+        round-trip; backends with a primary-key index (SQLite,
+        InMemory dict) get O(1) at the storage layer.
+
+        Exceptions from ``retrieve`` bubble up so the cascade
+        engine can log them at ERROR level and treat them as
+        not-found without silently misclassifying a backend
+        failure as "memory doesn't exist".
+        """
+        return self.retrieve(memory_id) is not None
+
+    def in_edges(self, target_id: str) -> list[str]:
+        """Return the list of memory_ids that reference ``target_id``.
+
+        v0.6.x: replaces the v0.5.x ``_discover_in_edges`` ``scan``
+        mode that walked ``list_all(limit=999999)`` on every cascade
+        call.
+
+        The default returns ``[]`` — a store without a maintained
+        reverse index has no fast in-edge path. Cascade's ``scan``
+        and ``auto`` modes fall back to a list_all scan in that
+        case (see :py:meth:`in_edges_scan`). Stores that maintain
+        a reverse index should override this with an O(1) lookup
+        and override :py:attr:`has_reverse_index` to return True.
+
+        Returned ids are NOT ordered and may include duplicates
+        when multiple relations point at the same target — the
+        cascade engine deduplicates via its visit_set.
+        """
+        return []
+
+    has_reverse_index: bool = False
+
+    def in_edges_scan(self, target_id: str) -> list[str]:
+        """O(N) fallback: list_all + filter on
+        ``metadata.relations[].target_memory_id``.
+
+        v0.6.x: extracted from the inline _scan_in_edges_for_store
+        helper in cascade.py. The ``scan`` and ``auto`` cascade
+        modes call this on stores that don't override
+        :py:meth:`in_edges`.
+        """
+        try:
+            results: list[str] = []
+            for mem in self.list_all(limit=10_000):
+                for rel in mem.metadata.relations:
+                    if rel.target_memory_id == target_id:
+                        results.append(str(mem.id))
+            return results
+        except Exception:
+            logger.exception(
+                "in_edges_scan(%s) failed; returning empty", target_id,
+            )
+            return []
