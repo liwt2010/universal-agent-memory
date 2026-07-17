@@ -171,7 +171,9 @@ class RetrievalPipeline:
         enriched = []
         for mem in memories:
             tokens = max(1, estimate_fn(mem.payload.raw))
-            score = getattr(mem, "retrieval_score", None) or mem.metadata.importance
+            score = getattr(mem, "retrieval_score", None)
+            if score is None:
+                score = mem.metadata.importance
             density = score / tokens
             enriched.append((density, tokens, mem))
 

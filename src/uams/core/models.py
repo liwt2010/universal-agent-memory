@@ -141,7 +141,7 @@ class Memory:
     metadata: MemoryMetadata
 
     # Ephemeral scoring fields (not persisted)
-    retrieval_score: float = 0.0
+    retrieval_score: float | None = None
     last_access_count: int = 0
 
     def touch(self) -> None:
