@@ -455,7 +455,18 @@ class RedisStore(MemoryStore):
     def search_vector(
         self, vector: list[float], k: int = 10, **filters: Any
     ) -> list[Memory]:
-        """Redis does not support vector search natively. Fallback to recency."""
+        """Redis does not support vector search natively. Fallback to recency.
+
+        v0.6.0: logs INFO on first call so operators see the
+        recency-only behaviour instead of silently wrong results.
+        """
+        logger.info(
+            "RedisStore.search_vector has no native vector search; "
+            "falling back to recency-ordered retrieval (k=%d, tier=%s). "
+            "Consider switching to ChromaDB or InMemoryStore for "
+            "cosine similarity.",
+            k, self._tier_name,
+        )
         return self._recent_memories(k)
 
     def search_graph(self, entity: str, depth: int = 2) -> list[Memory]:

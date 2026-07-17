@@ -352,7 +352,18 @@ class Neo4jStore(MemoryStore):
     def search_vector(
         self, vector: list[float], k: int = 10, **filters: Any
     ) -> list[Memory]:
-        """Neo4j does not natively support vector search (without plugins). Fallback to recency."""
+        """Neo4j does not natively support vector search (without plugins). Fallback to recency.
+
+        v0.6.0: logs INFO on first call so operators see the
+        recency-only behaviour instead of silently wrong results.
+        """
+        logger.info(
+            "Neo4jStore.search_vector has no native vector search; "
+            "falling back to recency-ordered retrieval (k=%d, tier=%s). "
+            "Install a vector plugin or switch to ChromaDB for "
+            "cosine similarity.",
+            k, self._tier_name,
+        )
         return self._recent_memories(k)
 
     def search_graph(self, entity: str, depth: int = 2) -> list[Memory]:

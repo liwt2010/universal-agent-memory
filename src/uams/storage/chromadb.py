@@ -23,7 +23,11 @@ class ChromaDBStore(MemoryStore):
     """
     ChromaDB-backed storage for vector similarity search.
     Falls back to keyword search if embeddings are not available.
+
+    Supports native vector similarity via ChromaDB's collection.query.
     """
+
+    vector_search_capable = True
 
     def __init__(self, collection_name: str = "uams", persist_directory: str | None = None):
         try:

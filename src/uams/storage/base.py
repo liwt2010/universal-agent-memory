@@ -19,7 +19,20 @@ class MemoryStore(ABC):
         ``UniversalMemorySystem.shutdown()`` to release connections,
         file handles, and pools. Skipping this leaks resources and can
         leave SQLite WAL files unflushed.
+
+    v0.6.0 — vector_search_capable: stores that natively support
+    vector cosine similarity (ChromaDB, InMemoryStore when an
+    embedding_fn is registered) set this class attribute to True.
+    Backends without native vector search (SQLite, Redis, PostgreSQL,
+    Neo4j) leave it at False; their ``search_vector`` falls back to
+    recency-ordered retrieval and logs an INFO-level message so
+    operators can see the degraded behaviour instead of getting
+    silently wrong results.
     """
+
+    #: Class-level flag. Override to True in stores that implement
+    #: real cosine / inner-product similarity in search_vector().
+    vector_search_capable: bool = False
 
     @abstractmethod
     def store(self, memory: Memory) -> None:

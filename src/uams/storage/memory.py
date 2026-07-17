@@ -41,7 +41,12 @@ class InMemoryStore(MemoryStore):
     """
     Thread-safe reference implementation using plain Python dicts and sets.
     Supports LRU eviction and capacity limits to prevent OOM.
+
+    Supports native cosine similarity in search_vector() (when an
+    embedding was stored alongside the memory payload).
     """
+
+    vector_search_capable = True
 
     def __init__(self, max_capacity: int = 10000):
         self._max_capacity = max_capacity

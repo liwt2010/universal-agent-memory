@@ -514,7 +514,20 @@ class SQLiteStore(MemoryStore):
     def search_vector(
         self, vector: list[float], k: int = 10, **filters: Any
     ) -> list[Memory]:
-        """SQLite does not support vector search natively. Fallback to recency."""
+        """SQLite does not support vector search natively. Fallback to recency.
+
+        v0.6.0: logs an INFO message on first call so operators see
+        that this backend's search_vector returns recency-ordered
+        results instead of cosine similarity. Check
+        ``self.vector_search_capable`` (False) to detect this.
+        """
+        logger.info(
+            "SQLiteStore.search_vector has no native vector search; "
+            "falling back to recency-ordered retrieval (k=%d, tier=%s). "
+            "Consider switching to ChromaDB or InMemoryStore for "
+            "cosine similarity.",
+            k, self._tier_name,
+        )
         conn = self._get_connection()
         try:
             cursor = conn.execute(f"""
