@@ -67,8 +67,22 @@ class AgentContext:
     tenant_id: str | None = None  # NEW: multi-tenant isolation boundary (cloud)
 
     def namespace(self) -> str:
-        """Return a unique namespace for this memory owner."""
-        parts = [self.agent_id, self.user_id or "_", self.team_id or "_"]
+        """Return a unique namespace for this memory owner.
+
+        v0.6.0: includes ``tenant_id`` so multi-tenant deployments
+        that share the same agent_id / user_id / team_id across
+        tenants don't accidentally collide. tenant_id appears LAST
+        in the join order so existing callers that read the first
+        three parts don't see a behavioural change when tenant_id
+        is None (it contributes an empty segment, which the join
+        treats as '_').
+        """
+        parts = [
+            self.agent_id,
+            self.user_id or "_",
+            self.team_id or "_",
+            self.tenant_id or "_",
+        ]
         return ":".join(parts)
 
 
