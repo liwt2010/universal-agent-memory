@@ -27,6 +27,7 @@ from uams.pipeline.compression import CompressionEngine, HeuristicCompressionEng
 from uams.pipeline.privacy import PrivacyFilter, DeduplicationWindow
 from uams.pipeline.forgetting import ForgettingEngine
 from uams.multi_agent.coordinator import MultiAgentCoordinator, Lease, Signal
+from uams.errors import UAMSError, ConfigError, StorageError, CascadeError, LLMError
 
 __all__ = [
     "UniversalMemorySystem",
@@ -54,4 +55,9 @@ __all__ = [
     "MultiAgentCoordinator",
     "Lease",
     "Signal",
+    "UAMSError",
+    "ConfigError",
+    "StorageError",
+    "CascadeError",
+    "LLMError",
 ]
