@@ -125,6 +125,14 @@ class OpenAICompatibleClient(LLMClient):
         Bypasses the openai SDK's blocking transport. The transport is
         lazy: a single ``httpx.AsyncClient`` is constructed on first
         call and reused for the lifetime of this LLM client instance.
+
+        v0.6.0: retries transient transport / server errors with
+        exponential backoff (0.5s → 4s, 3 attempts). The sync path
+        already does this via the openai SDK's ``max_retries=2``;
+        closing that parity gap. We retry on httpx.TimeoutException,
+        httpx.ConnectError, and httpx.HTTPStatusError for 429 /
+        5xx — but NOT on generic 4xx (those are caller errors, not
+        transport blips).
         """
         import httpx  # local import — httpx is a soft dep for async paths
 
@@ -144,18 +152,52 @@ class OpenAICompatibleClient(LLMClient):
                 headers={"Authorization": f"Bearer {self._api_key}"},
             )
             self._async_client = client
-        try:
-            resp = await client.post("/chat/completions", json=body)
-            resp.raise_for_status()
-            data = resp.json()
-        except httpx.HTTPError as exc:
-            logger.warning("AsyncLLM HTTP call failed: %s", exc)
-            raise
-        # OpenAI-shaped response: choices[0].message.content
-        choices = data.get("choices") or []
-        if not choices:
-            return ""
-        return choices[0].get("message", {}).get("content") or ""
+
+        # Retry transient failures (timeouts, connect errors, 429/5xx).
+        # Permanent failures (4xx other than 429) bubble up immediately.
+        max_attempts = 3
+        last_exc: Exception | None = None
+        for attempt in range(max_attempts):
+            try:
+                resp = await client.post("/chat/completions", json=body)
+                resp.raise_for_status()
+                data = resp.json()
+                # OpenAI-shaped response: choices[0].message.content
+                choices = data.get("choices") or []
+                if not choices:
+                    return ""
+                return choices[0].get("message", {}).get("content") or ""
+            except httpx.TimeoutException as exc:
+                last_exc = exc
+                logger.warning(
+                    "achat timeout (attempt %d/%d): %s",
+                    attempt + 1, max_attempts, exc,
+                )
+            except httpx.ConnectError as exc:
+                last_exc = exc
+                logger.warning(
+                    "achat connect error (attempt %d/%d): %s",
+                    attempt + 1, max_attempts, exc,
+                )
+            except httpx.HTTPStatusError as exc:
+                # Retry on 429 (rate limit) and 5xx (server errors).
+                status = exc.response.status_code
+                if status == 429 or status >= 500:
+                    last_exc = exc
+                    logger.warning(
+                        "achat HTTP %d (attempt %d/%d): %s",
+                        status, attempt + 1, max_attempts, exc,
+                    )
+                else:
+                    # Permanent 4xx — don't retry.
+                    raise
+            # Exponential backoff: 0.5s, 1s (capped at 4s)
+            if attempt < max_attempts - 1:
+                import asyncio
+                await asyncio.sleep(min(0.5 * (2 ** attempt), 4.0))
+        # All attempts exhausted
+        assert last_exc is not None
+        raise last_exc
 
     async def aclose(self) -> None:
         """Close the lazy httpx.AsyncClient. Call before shutdown to
