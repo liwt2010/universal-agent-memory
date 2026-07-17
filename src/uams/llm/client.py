@@ -18,6 +18,30 @@ import time
 logger = logging.getLogger(__name__)
 
 
+def _detect_local_provider(base_url: str) -> str:
+    """Tag the underlying provider from the base_url.
+
+    v0.7.0: lets operators / UAMSConfig.llm_provider auto-detection
+    see at a glance which LLM transport a client is talking to.
+    Returns one of:
+      'ollama'         — http(s)://host:11434[/...]
+      'lm_studio'      — http(s)://host:1234[/...]
+      'vllm'           — http(s)://host:8000[/v1...]
+      'openai'         — https://api.openai.com[/...]
+      'openai_compatible' — anything else
+    """
+    url = (base_url or "").lower()
+    if ":11434" in url or "/ollama" in url:
+        return "ollama"
+    if ":1234" in url or "/lm-studio" in url:
+        return "lm_studio"
+    if ":8000" in url or "/vllm" in url:
+        return "vllm"
+    if "api.openai.com" in url:
+        return "openai"
+    return "openai_compatible"
+
+
 class LLMClient(ABC):
     """Abstract LLM client. Implementations live in this module.
 
@@ -89,8 +113,12 @@ class OpenAICompatibleClient(LLMClient):
             raise ImportError(
                 "openai package required. Install: pip install 'universal-agent-memory[llm]'"
             ) from exc
+        # v0.7.0: ollama / LM Studio can be run without an API
+        # key. Treat empty / placeholder keys as "no auth" rather
+        # than an error. The OpenAI SDK still requires SOMETHING
+        # in the auth header, so we use a non-empty placeholder.
         if not api_key:
-            raise ValueError("api_key is required for OpenAICompatibleClient")
+            api_key = "ollama"  # accepted convention for local servers
         self._client = OpenAI(
             api_key=api_key,
             base_url=base_url,
@@ -101,6 +129,11 @@ class OpenAICompatibleClient(LLMClient):
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._timeout = float(timeout)
+        # v0.7.0: tag the provider so operators can see at a glance
+        # which LLM transport the client is talking to. Detection
+        # is a substring match on the base_url because the major
+        # local servers have well-known ports / paths.
+        self._provider_kind = _detect_local_provider(base_url)
 
     def chat(self, messages, *, max_tokens=1024, temperature=0.0, timeout=30.0):
         resp = self._client.chat.completions.create(

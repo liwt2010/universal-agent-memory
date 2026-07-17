@@ -6,6 +6,7 @@ All operations are thread-safe and include error handling with graceful degradat
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from dataclasses import dataclass
@@ -139,6 +140,11 @@ class UniversalMemorySystem(EventHandler):
         # Session tracking: session_id -> list of events
         self._session_events: dict[str, list[AgentEvent]] = {}
         self._session_lock = threading.RLock()
+        # v0.7.0: throttle the per-tenant "cap exceeded" WARNING
+        # so a noisy tenant doesn't spam the log. Set of
+        # (tenant_id,) tuples we've already warned about this
+        # process lifetime; the set grows monotonically.
+        self._tenant_cap_warned: set[tuple[str, ...]] = set()
         # Process-wide lock for decay_sweep: prevents two concurrent sweeps
         # (e.g. a slow SQLite sweep that runs >60s colliding with the next
         # tick of the docker-entrypoint loop, or two callers triggering
@@ -526,6 +532,25 @@ class UniversalMemorySystem(EventHandler):
                 len(ctx.user_id), self._config.max_user_id_length,
             )
             ctx.user_id = ctx.user_id[: self._config.max_user_id_length]
+
+        # 0c. v0.7.0: tenant-level resource caps. warn-only by
+        # default; set ``hard_enforce_tenant_caps=True`` to drop
+        # writes that exceed the cap. Both caps are None by
+        # default (no cap) and the per-session warning is throttled
+        # so a noisy tenant doesn't spam the log.
+        if ctx.tenant_id and (
+            self._config.tenant_max_memory_count is not None
+            or self._config.tenant_max_storage_bytes is not None
+        ):
+            if not self._check_tenant_cap(ctx):
+                if self._config.hard_enforce_tenant_caps:
+                    logger.warning(
+                        "observe() dropping event: tenant=%r exceeded "
+                        "configured cap; hard_enforce_tenant_caps=True",
+                        ctx.tenant_id,
+                    )
+                    return
+                # Warn-only path is logged inside _check_tenant_cap.
 
         # 1. Publish to event bus (notifies all subscribers)
         try:
@@ -1246,6 +1271,82 @@ class UniversalMemorySystem(EventHandler):
 
         result.duration_ms = (time.monotonic() - start) * 1000.0
         return result
+
+    def _check_tenant_cap(self, ctx: AgentContext) -> bool:
+        """Return True if the tenant is within configured caps.
+
+        v0.7.0: soft caps on per-tenant memory count and storage
+        bytes. ``True`` means "under cap, proceed". ``False`` means
+        "over cap, drop the event" (only honoured when
+        ``hard_enforce_tenant_caps=True``).
+
+        Approximations:
+        - count is computed by walking every tier and filtering on
+          ``context.tenant_id`` via delete_by_filter fallback
+          (SQLite is exact; others walk list_all).
+        - storage is len(raw) + len(structured) per memory; same
+          walk. The cost is one O(N) sweep per observe() when a
+          cap is configured; for tight loops the operator can
+          leave both caps None (default).
+
+        The warning is throttled to once per (tenant_id, cap_type)
+        per process lifetime so a misconfigured tenant doesn't
+        spam logs.
+        """
+        tenant = ctx.tenant_id
+        if not tenant:
+            return True
+        cfg = self._config
+        if cfg.tenant_max_memory_count is None and cfg.tenant_max_storage_bytes is None:
+            return True
+
+        total_count = 0
+        total_bytes = 0
+        for store in self._stores.values():
+            try:
+                for mem in store.list_all(limit=10_000):
+                    if getattr(mem.context, "tenant_id", None) != tenant:
+                        continue
+                    total_count += 1
+                    total_bytes += len(mem.payload.raw or "")
+                    if mem.payload.structured:
+                        total_bytes += len(
+                            json.dumps(mem.payload.structured)
+                        )
+            except Exception:
+                logger.exception(
+                    "_check_tenant_cap: store walk failed; "
+                    "treating as within-cap for safety"
+                )
+                return True
+
+        over = []
+        if (
+            cfg.tenant_max_memory_count is not None
+            and total_count >= cfg.tenant_max_memory_count
+        ):
+            over.append(
+                f"count={total_count} >= cap={cfg.tenant_max_memory_count}"
+            )
+        if (
+            cfg.tenant_max_storage_bytes is not None
+            and total_bytes >= cfg.tenant_max_storage_bytes
+        ):
+            over.append(
+                f"bytes={total_bytes} >= cap={cfg.tenant_max_storage_bytes}"
+            )
+        if not over:
+            return True
+        warn_key = (tenant, "|".join(over))
+        if warn_key not in self._tenant_cap_warned:
+            self._tenant_cap_warned.add(warn_key)
+            logger.warning(
+                "tenant_cap: tenant=%r exceeded %s; "
+                "subsequent observe() calls will be warn-only "
+                "(set hard_enforce_tenant_caps=True to drop writes)",
+                tenant, "; ".join(over),
+            )
+        return False  # over cap, but warn-only mode continues
 
     def _truncate_raw(self, text: str) -> str:
         """Truncate raw text to max_raw_length to prevent OOM and API cost explosions."""

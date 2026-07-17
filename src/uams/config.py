@@ -225,6 +225,19 @@ class UAMSConfig:
     cascade_audit_log_path: str = "logs/cascade_forget_audit.jsonl"
     cascade_orphan_log_path: str = "logs/cascade_orphan_log.jsonl"
 
+    # --- v0.7.0: tenant-level resource caps ---
+    # Soft cap on memory count per tenant_id. ``None`` (default) =
+    # no cap. When set, observe() with a matching tenant_id logs a
+    # WARNING the first time the cap is exceeded per session;
+    # subsequent calls keep working (warn-only by default; flip
+    # ``hard_enforce_tenant_caps`` to drop writes instead).
+    tenant_max_memory_count: int | None = None
+    # Soft cap on per-tenant storage in bytes. Same semantics as
+    # ``tenant_max_memory_count``. Approximated via len(raw) +
+    # len(structured) per stored memory.
+    tenant_max_storage_bytes: int | None = None
+    hard_enforce_tenant_caps: bool = False
+
     # ------------------------------------------------------------------
     # Environment variable parsing helpers
     # ------------------------------------------------------------------
@@ -378,7 +391,67 @@ class UAMSConfig:
             log_level=cls._env_str("UAMS_LOG_LEVEL", "INFO"),
             structured_logging=cls._env_bool("UAMS_STRUCTURED_LOG", True),
             health_check_port=cls._env_int("UAMS_HEALTH_PORT", 3111),
+            # v0.7.0 tenant-level resource caps
+            tenant_max_memory_count=(
+                None
+                if os.getenv("UAMS_TENANT_MAX_MEMORY_COUNT", "").strip() == ""
+                else cls._env_int("UAMS_TENANT_MAX_MEMORY_COUNT", 0)
+            ),
+            tenant_max_storage_bytes=(
+                None
+                if os.getenv("UAMS_TENANT_MAX_STORAGE_BYTES", "").strip() == ""
+                else cls._env_int("UAMS_TENANT_MAX_STORAGE_BYTES", 0)
+            ),
+            hard_enforce_tenant_caps=cls._env_bool("UAMS_HARD_ENFORCE_TENANT_CAPS", False),
         )
+
+    @classmethod
+    def from_env_with_local_auto_detect(cls) -> "UAMSConfig":
+        """``from_env`` with v0.7.0 local-LLM auto-detection.
+
+        Probes well-known local LLM endpoints (ollama :11434,
+        LM Studio :1234, vLLM :8000) and, if any responds, switches
+        ``llm_base_url`` + ``llm_provider`` to point at it. If no
+        local server is up, falls back to whatever env vars or
+        defaults are configured (so this is safe to call on
+        cloud-only deployments too — it just doesn't change anything).
+
+        Setting UAMS_LLM_LOCAL_AUTODETECT=false disables the
+        probe entirely (useful in restricted CI environments
+        where opening arbitrary TCP connections is forbidden).
+        """
+        cfg = cls.from_env()
+        if os.getenv("UAMS_LLM_LOCAL_AUTODETECT", "true").lower() in (
+            "0", "false", "no", "off"
+        ):
+            return cfg
+        if cfg.llm_enabled is False:
+            # Caller hasn't opted in; don't second-guess.
+            return cfg
+        # Already pinned to a non-default URL by env. Don't probe.
+        if os.getenv("UAMS_LLM_BASE_URL"):
+            return cfg
+        # Probe well-known local endpoints.
+        import socket
+        from uams.llm.client import _detect_local_provider
+        candidates = [
+            ("ollama", "http://localhost:11434/v1"),
+            ("lm_studio", "http://localhost:1234/v1"),
+            ("vllm", "http://localhost:8000/v1"),
+        ]
+        for name, url in candidates:
+            host = url.split("//", 1)[1].split(":")[0]
+            port = int(url.split(":")[-1].rstrip("/").rstrip("v1").rstrip("/") or "80")
+            try:
+                with socket.create_connection((host, port), timeout=0.3):
+                    detected = _detect_local_provider(url)
+                    cfg.llm_base_url = url
+                    cfg.llm_provider = detected
+                    cfg.llm_api_key = cfg.llm_api_key or "ollama"
+                    return cfg
+            except (OSError, socket.timeout):
+                continue
+        return cfg
 
     def validate(self) -> None:
         """Validate configuration constraints. Raises ValueError if invalid.
