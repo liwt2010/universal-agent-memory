@@ -27,6 +27,7 @@ from uams.core.models import (
 from uams.llm.client import LLMClient
 from uams.pipeline.compression import CompressionEngine
 from uams.pipeline.hierarchical_filter import HierarchicalFilter
+from uams.pipeline.privacy import PrivacyFilter
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,7 @@ class LLMCompressionEngine(CompressionEngine):
         self._max_tokens = max(1, int(max_tokens))
         self._temperature = float(temperature)
         self._hfilter = hierarchical_filter or HierarchicalFilter()
+        self._pfilter = PrivacyFilter()
 
     # --- Episodic: events -> narrative Memory ---
 
@@ -120,6 +122,20 @@ class LLMCompressionEngine(CompressionEngine):
                 )
             narrative = self._summarize_batch(pseudo_events)
 
+        # v0.6.0: run the assembled narrative through PrivacyFilter
+        # before it lands in the episodic store. LLM output can
+        # hallucinate or regurgitate PII / secrets from the source
+        # events (P1-7 from the audit), and we don't want PII to
+        # bleed through the compression step. max_privacy across
+        # the source events is the floor: if ANY source event was
+        # marked PRIVATE, the resulting memory is at most PRIVATE.
+        max_privacy = max(
+            (e.privacy for e in events),
+            default=PrivacyLevel.PUBLIC,
+            key=lambda p: list(PrivacyLevel).index(p),
+        )
+        sanitized_narrative = self._pfilter.sanitize(narrative, max_privacy)
+
         return Memory(
             id=MemoryId(),
             anchor=TemporalAnchor(
@@ -128,7 +144,7 @@ class LLMCompressionEngine(CompressionEngine):
             ),
             context=ctx,
             payload=MemoryPayload(
-                raw=narrative,
+                raw=sanitized_narrative,
                 structured={
                     "event_count": len(events),
                     "duration_sec": events[-1].timestamp - events[0].timestamp,
@@ -137,7 +153,7 @@ class LLMCompressionEngine(CompressionEngine):
             ),
             metadata=MemoryMetadata(
                 memory_type=MemoryType.EPISODIC,
-                privacy=first.privacy,
+                privacy=max_privacy,
                 source_event=EventType.SESSION_END,
             ),
         )
