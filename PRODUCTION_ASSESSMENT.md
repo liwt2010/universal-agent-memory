@@ -48,6 +48,32 @@
 > 3. `redis test` 跟 `chromadb stress`:历史 backend CI 不稳定,需要单独 dev session 调研。
 > 4. `AsyncMemoryStore` ABC(P2-1)+ 真 async 6 存储:对 `async_system` 的 executor hop 是 8 线程默认池饱和源。
 
+> **2026-07-17 v10 更新(本次,v0.6.0 收尾)**:本次为 **外部审计 pass resolution 批次**。外部 agent 对 v0.5.2 出了 14 项 P0/P1/P2/P3 审计意见,本批**关闭 9 项**,**5 项推 v0.6.x**(需要 service container 验证)。`v0.6.0` 是 v0.5.2 之后的 **non-breaking minor release**。
+
+> **v10 工作范围**:
+> - **P0-1 (GDPR)**:6 store 加 `tenant_id` 列 + 真接线 `delete_by_filters`(本批做 SQLite + InMemory 2 个,其他 4 store 推 v0.6.x);SQLite schema 升 v2 加列迁移
+> - **P0-2 (silent 999 cap)**:新 `MemoryStore.truncate()` + `list_all_paginated()`;SQLite 覆盖 `DELETE FROM` 走单 SQL;`UniversalMemorySystem.clear()` 改调 truncate;`MigrationTool.migrate()` 用 OFFSET 循环
+> - **P0-4 (异常族)**:`uams.errors` 新模块 + `UAMSError` 5 子类;store 内部保持 graceful degradation,只在 facade 边界 raise(Q1 选项 B)
+> - **P1-1**:`llm_provider='ollama'` 合法化
+> - **P1-2**:`vector_search_capable` 类属性 + 4 个 non-vector store search_vector INFO log
+> - **P1-3**:`PrivacyFilter` 拆 `SECRET_PATTERNS` / `PII_PATTERNS`;secrets 永远 redact
+> - **P1-4**:`retrieval_score=0.0` falsy 修复(改 dataclass 默认 None + 用 `is None` 代替 `or`)
+> - **P1-6**:ChromaDB `list_all()` stub 修,真流式 `collection.get(include=['metadatas','documents'], limit=500, offset=...)` 分页
+> - **P1-7**:`LLMCompressionEngine.compress_working_to_episodic` 在 narrative 拼装后过 `PrivacyFilter`;`metadata.privacy` 取 MAX across source events
+> - **P2-3**:`AgentContext.namespace()` 4 段(加 tenant_id)
+> - **P2-4**:`OpenAICompatibleClient.achat` 加 retry loop(3 次,exponential backoff 0.5s/1s/2s)
+> - **P2-6**:`observe()` 顶部拒空 `agent_id` / `agent_type` / `session_id` + warn drop
+
+> **v10 推 v0.6.x 的项**(Q4 一次性策略之外,需要 service container 验证):
+> - P0-3 cascade reverse_index(4 store)
+> - P1-5 `MemoryStore.find_tier` 替代 `_locate_tier` 全 tier 扫
+> - P2-1 跨后端 `delete_by_project_id(tenant_id=...)` 集成测试
+> - P2-5 `GeneralAuditWriter` 真做(Q2 选项 B,延后做 design review)
+> - 4 store (Redis/PG/Neo4j/Chroma) 的 `delete_by_filters` 复合 WHERE 覆盖
+
+> **v10 评级动作 — 维持 A-**:`v0.6.0` **修了一类合规风险**(GDPR 999 cap + secret 泄露在 PUBLIC) + 加了 1 个新能力(`UAMSError` exception family),距 A+ 仍缺(与 v9 同):真实 case study / 真实 LLM 月报 / 第三方 pen-test / 6 后端 cluster 演练 / Helm。但 v0.6.0 **为 P2-5 audit writer 铺了路**(P0-4 让 catch UAMSError 成为可能),也修了 P0-3 部分(2/6 store 加 tenant_id + 真 multi-predicate delete)。
+> **v0.6.0 是 non-breaking minor release**。新增 `UAMSError` 异常族 + 4 个 MemoryStore 抽象方法(gracefully default 兜底)+ `Memory.retrieval_score` 类型变 `float | None`;`AgentContext.namespace()` 多一段 tenant。**任何 v0.5.x 代码不需要修改即可升级**。
+
 > **2026-07-12 v7 更新(本次)**:本次为 **独立审计加固批次**。本地手工审计 + 后台独立 agent(并发、DX 两个角度)交叉验证,**共发现 15 个真问题**,分布在 P0/P1/P2 三档,5 个 commit 修复完成,版本从 0.1.0 跃升到 **0.3.0**。
 >
 > **P0 真问题(静默 correctness)**:

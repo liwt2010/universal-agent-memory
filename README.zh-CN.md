@@ -116,6 +116,25 @@ receipt = {
 
 ---
 
+## 🆕 7-17 新增（v0.6.0 — 审计 pass 收尾）
+
+**Non-breaking minor release**,关闭 v0.5.2 外部审计 14 项中的 9 项。新 API、新异常族、1 个 schema 迁移(SQLite 旧库自动应用)。完整迁移指南见 `RELEASE_NOTES_v0.6.0.md`。
+
+| 改动 | 内容 | 原因 |
+|------|------|------|
+| **`UAMSError` 异常族** | 新 `uams.errors` 模块:`UAMSError` + `ConfigError` / `StorageError` / `CascadeError` / `LLMError`,从 `uams.*` 重新导出 | Vault 可按类别 catch UAMS 失败,不再 `except Exception` 撒网。store 内部仍走 `try/except + log + fallback` 保 graceful degradation,只在 facade 边界 raise |
+| **`MemoryStore.truncate()` + `list_all_paginated()` + `delete_by_filters()`** | SQLite 用 `DELETE FROM` 单 SQL 覆盖,不再卡 999 行 cap | 修复 v0.5.x `clear()` 静默丢 >999 行的 P0 GDPR bug;`MigrationTool.migrate()` 不再一次性物化全表 |
+| **`MemoryStore.vector_search_capable` 类属性** | `InMemoryStore` / `ChromaDBStore` = True;其他 4 个 = False 且 `search_vector` 每次 INFO log | 操作员能在生产 log 看到"该后端向量搜索是 recency fallback" |
+| **`tenant_id` 接入 SQLiteStore + InMemoryStore** | schema 升 v2 + 加 `idx_<tier>_tenant` 索引;旧库自动 `ALTER TABLE ADD COLUMN` 迁移;`delete_by_project_id(tenant_id=...)` 走复合 `WHERE` | 真多租户 GDPR delete(其他 4 后端推 v0.6.x) |
+| **`PrivacyFilter` 拆 `SECRET_PATTERNS` / `PII_PATTERNS`** | secret(API key / bearer / 信用卡 / GitHub PAT)永远 redact;PII(email / phone)仅 PRIVATE/INTERNAL/SECRET | 关闭 v0.5.x PUBLIC 内容带 OpenAI key 直接落盘的 P0 合规洞 |
+| **`Memory.retrieval_score` 改 `float \| None = None`** + `_compress_to_budget` 改 `is None` 判断 | 0.0 score 当 0.0 处理,不再走 `importance` fallback | 修复 `0.0` falsy 路由 bug |
+| **`AgentContext.namespace()` 含 `tenant_id`** | 4 段冒号拼接(原 3 段);None 时折叠为 `_` | 多租户 key 隔离 |
+| **`OpenAICompatibleClient.achat` 加 retry loop** | 3 次尝试,exponential backoff 0.5s/1s/2s,封顶 4s;retry `TimeoutException` / `ConnectError` / 429/5xx;永久 4xx 直接抛 | 同步 `chat()` 早就有 `max_retries=2`,async 路径补齐 |
+| **`LLMCompressionEngine` 落库前过 `PrivacyFilter`** | `metadata.privacy` 改取 source events 的 MAX(原取第一个) | LLM 输出可能幻觉/回吐 PII / secret,压缩链路必须过滤 |
+| **`observe()` 拒空 `agent_id` / `agent_type` / `session_id`** | 顶部校验,warn + drop | 防止 misconfigured agent 落库后被 `delete_by_filter('agent_id', '')` 一刀切 |
+| **`ChromaDBStore.list_all()` 真实流式** | `collection.get(include=['metadatas','documents'], limit=500, offset=offset)` 分页(原 stub 返 `[]`) | 修复 ChromaDB 后端 cascade in-edge / `delete_by_project_id` / `migrate()` 静默丢所有 memory 的 P0 bug |
+| 488 → 498 测试 | +10 新测试模块,覆盖 errors / retrieval_score / ollama / tenant_id / privacy / namespace / achat retry / observe 校验 / vector_search_capable / chromadb list_all / llm_compression pii / truncate | 无回归;2 个 pre-existing failure 仍在(`test_large_chinese_text` perf / `test_shutdown_persists_working` test-logic) |
+
 ## 🆕 7-15 新增（v0.5.2 — 类型注解现代化）
 
 | 改动 | 内容 | 原因 |
@@ -443,7 +462,7 @@ universal-agent-memory/
 │   ├── research_agent.py
 │   ├── multi_agent.py
 │   └── _token_compression_demo.py
-├── tests/                  # 488 个测试
+├── tests/                  # 498 个测试
 │   ├── test_system.py
 │   ├── test_chaos.py
 │   ├── test_aplus.py

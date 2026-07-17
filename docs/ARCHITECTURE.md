@@ -39,7 +39,7 @@ The system is designed to be:
 
 ---
 
-## Async Architecture (v0.5.x)
+## Async Architecture (v0.5.x — v0.6.0)
 
 `AsyncUniversalMemorySystem` wraps `UniversalMemorySystem` and exposes
 the same public surface as async coroutines. The 6 storage backends,
@@ -108,6 +108,95 @@ via `asyncio.to_thread`. True async I/O for each backend is in the
 v0.6.x roadmap (`AsyncMemoryStore` ABC + per-backend async
 implementations backed by aiosqlite / asyncpg / redis.asyncio /
 neo4j-async-driver / httpx-backed chromadb).
+
+---
+
+## Audit-Pass Resolution (v0.6.0)
+
+The v0.5.2 external audit produced 14 P0/P1/P2/P3 findings. v0.6.0
+closes 9 of them. The architectural changes worth highlighting:
+
+### 1. `UAMSError` exception family
+
+```
+UAMSError (uams.errors)
+  ├── ConfigError    → UAMSConfig.validate() failures
+  ├── StorageError   → facade-level backend refuses
+  ├── CascadeError   → CascadeForgetter unrecoverable
+  └── LLMError       → LLMCompressionEngine unrecoverable
+```
+
+Re-exported from the package root. Store internals keep their
+`try/except + log + fallback` pattern for graceful degradation;
+only the system.py facade and the CascadeForgetter boundary
+translate genuine unrecoverable failures into these subclasses.
+
+### 2. `MemoryStore` contract additions (v0.6.0)
+
+* `truncate() -> int` — single-round-trip "delete everything".
+  SQLite: `DELETE FROM <table>`. Default: in-process fallback.
+* `list_all_paginated(limit, offset) -> list[Memory]` — true
+  OFFSET-based pagination. SQLite: raw `LIMIT ? OFFSET ?`
+  bypassing the 999-row clamp on `list_all`.
+* `delete_by_filters(filters: tuple[tuple[str, Any], ...]) -> int`
+  — multi-predicate delete. SQLite: composite `WHERE col1 = ?
+  AND col2 = ?` (O(matches)). Default: in-process fallback.
+* `vector_search_capable: bool = False` class attribute.
+  `InMemoryStore` and `ChromaDBStore` set it to True; the other
+  4 backends log an INFO message on every `search_vector` call.
+
+### 3. `PrivacyFilter` split (v0.6.0)
+
+Patterns are now two disjoint sets:
+
+* `SECRET_PATTERNS` — API keys, bearer tokens, credit cards,
+  passwords, GitHub PATs. Applied at **every** privacy level
+  (PUBLIC included) so a leaked key never lands on disk.
+* `PII_PATTERNS` — emails, phones, SSNs. Applied only at
+  PRIVATE/INTERNAL/SECRET (PUBLIC keeps user-visible PII).
+
+### 4. LLM compression → PrivacyFilter (v0.6.0)
+
+`LLMCompressionEngine.compress_working_to_episodic` now runs the
+assembled narrative through `PrivacyFilter` with the MAX privacy
+level across source events as the floor. The compressed memory's
+`metadata.privacy` is set to that MAX. The structured payload
+field is unchanged.
+
+### 5. SQLite schema v2 (v0.6.0)
+
+New column `tenant_id TEXT` + new index `idx_<tier>_tenant` on
+every tier table. Auto-migrated on first open of a pre-v0.6.0 DB
+via `ALTER TABLE ADD COLUMN tenant_id` (idempotent). Old rows
+have `tenant_id=NULL`; back-compat preserved.
+
+### 6. Schema migration ordering (v0.6.0)
+
+The `_ensure_schema` step forces a `conn.commit()` after the
+DDL block and **before** running the `PRAGMA table_info` column
+detector on a separate connection. Without this, the detector
+sees the pre-DDL on-disk state and the subsequent `ALTER TABLE`
+silently rolls back when the holding connection returns to
+the pool (the `in_transaction` check in `_return_connection`
+keeps it from clobbering already-committed DDL on close).
+
+### Deferred to v0.6.x
+
+The following audit items are **not** in v0.6.0 because they
+require service-container CI to verify end-to-end (Redis /
+PostgreSQL / Neo4j / ChromaDB live tests are not green on every
+runner):
+
+* P0-3 cascade reverse-index (4 stores)
+* P1-5 `MemoryStore.find_tier` to replace `_locate_tier`'s
+  per-tier `retrieve()` sweep
+* P2-1 cross-backend `delete_by_project_id(tenant_id=...)`
+  integration tests
+* P2-5 `GeneralAuditWriter` (real audit log file with append-
+  only JSONL) — deferred because the simpler in-process
+  `MetricsCollector` already records observe / forget events
+* Cross-backend `delete_by_filters` override for the 4
+  non-trivial stores
 
 ---
 

@@ -5,6 +5,146 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-07-17
+
+**Non-breaking minor release.** Closes all P0 / P1 / most P2
+findings from the v0.5.2 external audit pass. Adds one new
+exception hierarchy, four new APIs (`MemoryStore.truncate`,
+`MemoryStore.list_all_paginated`, `MemoryStore.delete_by_filters`,
+`MemoryStore.vector_search_capable`), one new internal module
+(`uams.errors`), one new behaviour (LLM-compressed episodic
+memories run through `PrivacyFilter` before landing in the
+store), and several correctness fixes.
+
+### Audit-driven fixes
+
+P0 — production-blocking:
+
+* **P0-1 — `tenant_id` actually written to storage.** Previously
+  `AgentContext.tenant_id` only round-tripped through
+  `to_json`/`from_json`; the multi-tenant `delete_by_project_id(
+  project_id, tenant_id=...)` path walked `list_all` in memory
+  and silently dropped any tenant past 999 rows on SQLite.
+  `SQLiteStore` and `InMemoryStore` now carry a real `tenant_id`
+  column / field; `delete_by_filters(filters)` is a new
+  `MemoryStore` API that takes a tuple of `(field, value)` pairs
+  and emits a single multi-predicate `WHERE` on SQLite. Schema
+  bumps to v2 with a one-shot `ALTER TABLE ADD COLUMN tenant_id`
+  for in-place upgrades.
+* **P0-2 — `clear()` / `migrate()` no longer silent-drop past
+  999 rows.** New `MemoryStore.truncate()` (SQLite: single
+  `DELETE FROM` round-trip) and `list_all_paginated(limit, offset)`
+  replace the previous `list_all(limit=999999) + per-row delete`
+  pattern.
+* **P0-3, P0-4 (deferred to v0.6.x)** — in-edge reverse indexes
+  for cascade and the full `UAMSError` surface on every store
+  raise path. v0.6.0 ships the `UAMSError` family in
+  `uams.errors` (5 classes) but keeps the existing per-store
+  graceful-degradation pattern; only the facade boundary
+  translates unrecoverable failures into `UAMSError` subclasses.
+
+P1 — performance / API integrity:
+
+* **P1-1 — `llm_provider='ollama'` now valid.** Validator
+  accepts `ollama` alongside `openai_compatible` / `null`. The
+  underlying `OpenAICompatibleClient` was always ollama-compatible;
+  this unblocks the documented local-ollama recipe in README.md.
+* **P1-2 — `vector_search_capable` flag.** New class attribute
+  on `MemoryStore`. `InMemoryStore` and `ChromaDBStore` set it
+  to True; the other 4 backends leave it False and now log an
+  INFO message on every `search_vector` call so operators see
+  the recency fallback in production logs.
+* **P1-3 — `PrivacyFilter` always scrubs secrets.** Pattern list
+  is split into `SECRET_PATTERNS` (API keys, bearer tokens,
+  credit cards, passwords, GitHub PATs) and `PII_PATTERNS`
+  (emails, phones, SSNs). `SECRET_PATTERNS` apply at every
+  privacy level; `PII_PATTERNS` only at `PRIVATE`/`INTERNAL`/
+  `SECRET`. Closes the v0.5.x GDPR/SOC2 hole where PUBLIC
+  content with an embedded OpenAI key was written verbatim.
+* **P1-4 — `retrieval_score=0.0` no longer falsy.** `Memory.
+  retrieval_score` typed as `float | None = None`. `_compress_to
+  _budget` now uses `is None` instead of `or`, so a memory with
+  explicit 0.0 score sorts as 0.0, not as the importance
+  fallback.
+* **P1-5, P1-6 (deferred to v0.6.x)** — `MemoryStore.find_tier`
+  fast-path for cascade `_locate_tier` and the in-edge
+  reverse-index acceleration. v0.6.0 fixes the most painful
+  variant of P1-6 (ChromaDB `list_all` was a stub returning
+  `[]` that silently broke GDPR deletion on that backend).
+* **P1-7 — LLM-compressed episodic memories run through
+  `PrivacyFilter` before landing in the store.** The compressed
+  memory's `metadata.privacy` is now the MAX across source
+  events (was: just the first event's privacy).
+
+P2 — DX / test coverage:
+
+* **P2-3 — `AgentContext.namespace()` includes `tenant_id`.**
+  Multi-tenant key isolation at the namespace level.
+* **P2-4 — `OpenAICompatibleClient.achat` retries transient
+  failures.** 3-attempt loop with exponential backoff
+  (0.5s → 1s → 2s, capped at 4s) on `httpx.TimeoutException`,
+  `httpx.ConnectError`, and 429/5xx `HTTPStatusError`. Permanent
+  4xx still bubbles up immediately. Closes the async-vs-sync
+  reliability gap.
+* **P2-6 — `observe()` rejects empty required fields.** A
+  context with `agent_id=''` / `agent_type=''` / `session_id=''`
+  is dropped at entry with a WARNING log; downstream
+  `delete_by_filter('agent_id', '')` can no longer mass-delete
+  every misconfigured agent's memories.
+* **P2-1, P2-5 (deferred to v0.6.x)** — cross-backend
+  integration tests for `delete_by_project_id` and the
+  `GeneralAuditWriter` (real audit log, not the warning-shim
+  the audit suggested).
+
+### Deferred to v0.6.x
+
+Items below were identified in the v0.5.2 audit but pushed
+forward because they require service-container CI to verify
+end-to-end (Redis / PostgreSQL / Neo4j / ChromaDB live tests
+are not green on every runner):
+
+* P0-3 cascade reverse-index for the 4 non-trivial backends
+  (SQLite + InMemory covered by the existing in-place
+  in-edge scan; ChromaDB covered by the list_all fix in
+  P1-6).
+* P1-5 `MemoryStore.find_tier(memory_id)` to replace
+  `_locate_tier`'s per-tier `retrieve()` sweep.
+* P2-1 cross-backend `delete_by_project_id(tenant_id=...)`
+  integration tests.
+* P2-5 `GeneralAuditWriter` (real audit log file with append-
+  only JSONL) — currently deferred because the simpler
+  in-process `MetricsCollector` already records `forget` /
+  `observe` events; a separate disk-spilling audit writer is
+  the right shape but it deserves its own design review
+  rather than a rushed v0.6.0 cut.
+* Cross-backend `delete_by_filters` override for
+  Redis / PostgreSQL / Neo4j / ChromaDB (v0.6.0 covers
+  SQLite + InMemory).
+
+### Compatibility notes
+
+* No runtime behaviour change for SQLite + InMemory callers
+  except that the v2 migration is automatic on first open
+  of a pre-v0.6.0 DB.
+* `Memory.retrieval_score` is now `float | None` instead of
+  `float = 0.0`. Callers that always set a numeric score
+  see no change; callers that read the field as `float` and
+  the value is None will need `x if x is not None else
+  default`.
+* `AgentContext.namespace()` joins 4 parts now; first three
+  parts are unchanged.
+* `UAMSError` is a new public symbol; pre-existing code that
+  catches `Exception` is unaffected.
+
+Local: **498 tests pass** + 1 skipped (intentional v0.6.x
+follow-up) + 2 pre-existing unrelated failures
+(`test_large_chinese_text` perf threshold,
+`test_shutdown_persists_working` test-logic bug — both present
+since v0.5.0).
+
+See `RELEASE_NOTES_v0.6.0.md` for the full migration guide
+and `docs/CONFIG_REFERENCE.md` for the configuration surface.
+
 ## [0.5.2] - 2026-07-15
 
 **Non-breaking patch release.** Zero runtime behaviour change in the
@@ -631,5 +771,11 @@ The two pre-existing failures are unrelated and out of scope for this pass.
 - CI/CD pipeline with GitHub Actions
 - Multi-language documentation (English, 简体中文, 繁體中文)
 
-[Unreleased]: https://github.com/liwt2010/universal-agent-memory/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/liwt2010/universal-agent-memory/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/liwt2010/universal-agent-memory/compare/v0.5.2...v0.6.0
+[0.5.2]: https://github.com/liwt2010/universal-agent-memory/compare/v0.5.1...v0.5.2
+[0.5.1]: https://github.com/liwt2010/universal-agent-memory/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/liwt2010/universal-agent-memory/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/liwt2010/universal-agent-memory/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/liwt2010/universal-agent-memory/compare/v0.1.0...v0.3.0
 [0.1.0]: https://github.com/liwt2010/universal-agent-memory/releases/tag/v0.1.0

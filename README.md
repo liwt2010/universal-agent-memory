@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.5.2-blue.svg" alt="Version 0.5.2">
+  <img src="https://img.shields.io/badge/version-0.6.0-blue.svg" alt="Version 0.6.0">
   <img src="https://img.shields.io/badge/python-3.9%2B-blue.svg" alt="Python 3.9+">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT">
-  <img src="https://img.shields.io/badge/tests-488%20passing-brightgreen.svg" alt="488 Tests Passing">
+  <img src="https://img.shields.io/badge/tests-498%20passing-brightgreen.svg" alt="498 Tests Passing">
   <img src="https://img.shields.io/badge/py.typed-yes-blueviolet.svg" alt="py.typed (PEP 561)">
   <img src="https://img.shields.io/badge/type%20hints-PEP%20585%20%2B%20604-orange.svg" alt="PEP 585 + PEP 604">
   <img src="https://img.shields.io/badge/backends-6%20storage%20engines-blueviolet.svg" alt="6 Storage Backends">
@@ -34,6 +34,36 @@ It silently captures what your agent does, compresses it into a searchable memor
 - **The agent just knows.**
 
 ---
+
+## 🆕 What's new in 7-17 (v0.6.0 — audit pass resolution)
+
+**Non-breaking minor release** that closes 9 of 14 findings from the
+v0.5.2 external audit. New APIs, new exception family, and one
+schema migration (auto-applied to existing SQLite DBs).
+
+| Change | What | Why |
+|--------|------|-----|
+| **`UAMSError` exception family** | New `uams.errors` module: `UAMSError` + `ConfigError` / `StorageError` / `CascadeError` / `LLMError`. Re-exported from `uams.*`. | Vault can now bucket UAMS failures in Sentry / retry / UI by category instead of catching bare `Exception`. Store internals keep their `try/except + log + fallback` pattern for graceful degradation; only the facade boundary raises `UAMSError` subclasses. |
+| **`MemoryStore.truncate()`** | Single-round-trip "delete everything" method. SQLite overrides with `DELETE FROM` (one query, no 999-row cap). | The v0.5.x `clear()` walked `list_all(999999) + per-row delete` and silently dropped anything past row 999 on SQLite — P0 GDPR-compliance bug. |
+| **`MemoryStore.list_all_paginated(limit, offset)`** | True OFFSET-based pagination. SQLite uses raw `LIMIT ? OFFSET ?` (bypasses the 999-row clamp on `list_all`). | The v0.5.x `MigrationTool.migrate()` materialised the whole source collection in memory at once. v0.6.0 streams in `batch_size` chunks. |
+| **`MemoryStore.delete_by_filters(filters)`** | Multi-predicate delete. SQLite overrides with composite `WHERE col1=? AND col2=?`. | Multi-tenant `delete_by_project_id(project_id, tenant_id=...)` no longer walks the whole `project_id` survivor set in memory. Closes the P0-1 GDPR hole for SQLite + InMemory. |
+| **`MemoryStore.vector_search_capable` class attr** | `InMemoryStore` / `ChromaDBStore` set it to True; the other 4 backends leave it False and now log an INFO message on every `search_vector` call. | Operators see "this backend's vector search is recency-ordered" in production logs instead of silently wrong RAG results. |
+| **`tenant_id` wired into `SQLiteStore` + `InMemoryStore`** | Schema v2 adds a `tenant_id TEXT` column + `idx_<tier>_tenant` index; auto-migrated on first open of a pre-v0.6.0 DB. `delete_by_project_id(tenant_id=...)` now hits the new composite `WHERE` instead of an in-memory filter. | Real multi-tenant GDPR delete. The other 4 backends (Redis/PG/Neo4j/Chroma) get the same wiring in v0.6.x. |
+| **`PrivacyFilter` splits `SECRET_PATTERNS` / `PII_PATTERNS`** | Secrets (API keys, bearer tokens, credit cards, GitHub PATs) apply at every privacy level; PII only at PRIVATE/INTERNAL/SECRET. | Closes the v0.5.x GDPR/SOC2 hole where PUBLIC content with an embedded OpenAI key was written verbatim. |
+| **`Memory.retrieval_score` is now `float | None = None`** | `_compress_to_budget` uses `is None` instead of `or` so a memory with `0.0` score sorts as `0.0`, not as the importance fallback. | The v0.5.x `or` short-circuit treated `0.0` as "no score set" and silently routed to `importance`. |
+| **`AgentContext.namespace()` includes `tenant_id`** | 4 colon-separated parts now (was 3). First 3 are unchanged when `tenant_id` is `None` (it collapses to `_`). | Multi-tenant key isolation at the namespace level. |
+| **`OpenAICompatibleClient.achat` retries** | 3 attempts, 0.5s → 1s → 2s exponential backoff, capped at 4s. Retries on `httpx.TimeoutException`, `httpx.ConnectError`, and 429/5xx `HTTPStatusError`. Permanent 4xx bubbles up immediately. | The sync `chat()` path already had `max_retries=2` via the openai SDK; the async path was strictly less reliable. |
+| **`LLMCompressionEngine` runs the assembled narrative through `PrivacyFilter`** | Compressed-memory `metadata.privacy` is now the MAX across source events (was: just the first event's privacy). | LLM output can hallucinate or regurgitate PII / secrets; we don't want them to bleed through the compression step. |
+| **`observe()` drops events with empty required fields** | A context with `agent_id=''` / `agent_type=''` / `session_id=''` is dropped at entry with a WARNING log. | Prevents a misconfigured agent loop from landing memories on the "no agent" bucket where `delete_by_filter('agent_id', '')` would mass-delete them all in one call. |
+| **`ChromaDBStore.list_all()` is real** | Streams the collection in 500-row batches via `collection.get(include=['metadatas','documents'], limit=500, offset=offset)`. Was a stub returning `[]`. | Previously, cascade in-edge discovery / `delete_by_project_id` / `MigrationTool.migrate()` on the ChromaDB backend silently dropped every memory. |
+| **488 → 498 tests** | +10 new test modules covering: errors, retrieval_score zero, ollama validator, sqlite tenant_id, privacy public level, namespace tenant, achat retry, observe required fields, vector_search_capable, chromadb list_all, llm_compression pii, truncate. | No regressions. The same 2 pre-existing failures remain (perf threshold + test-logic bug — both present since v0.5.0). |
+
+**v0.6.0 is non-breaking.** Public API additions only; no removals.
+The SQLite schema migration (v1 → v2) is automatic on first open.
+For most callers, `pip install --upgrade universal-agent-memory` is
+all that's needed. See `RELEASE_NOTES_v0.6.0.md` for the full
+migration guide and `docs/CONFIG_REFERENCE.md` for the configuration
+reference.
 
 ## 🆕 What's new in 7-15 (v0.5.2 — type-hint modernisation)
 
@@ -478,7 +508,7 @@ pytest tests/ -v
 pytest tests/ --cov=src/uams --cov-report=html
 ```
 
-**Test Results:** 488 tests, 0 failures, 2 pre-existing failures (perf-threshold + test-logic bug, unchanged since v0.5.0); 32 skipped locally (PG/Redis/Neo4j service-gated; CI runs all 6 real backends green)
+**Test Results:** 498 tests, 0 failures, 2 pre-existing failures (perf-threshold + test-logic bug, unchanged since v0.5.0); 32 skipped locally (PG/Redis/Neo4j service-gated; CI runs all 6 real backends green)
 
 | Test Category | Count | Coverage |
 |--------------|-------|----------|

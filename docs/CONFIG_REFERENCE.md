@@ -6,8 +6,9 @@ audit. The audit pass that landed v0.4.0 / v0.5.0 fixed the
 highest-impact ones (e.g. `sqlite_pool_size`, `cascade_*`); the
 v0.5.2 release added the next six (`max_session_events`,
 `max_results_per_session`, `llm_max_tokens`, `llm_temperature`,
-`max_agent_id_length`, `max_user_id_length`). The remaining aspirational
-keys are listed in Tier 3 below.
+`max_agent_id_length`, `max_user_id_length`). v0.6.0 confirmed all
+six are still wired (see Tier 1). The remaining aspirational keys
+are listed in Tier 3.
 
 This file is the source of truth for **which config keys actually
 take effect** so operators don't waste time tuning keys that are
@@ -69,13 +70,11 @@ up.
 
 | Key | Intended (but unwired) purpose |
 |---|---|
-| `max_session_events` | Intended as a cap on `_session_events` per session; no code reads it. |
-| `privacy_redaction_enabled` | Intended as a switch on `PrivacyFilter`; no code reads it (privacy filter is always on). |
-| `enable_audit_log`, `audit_log_path` | Intended as a switch for an audit-log writer that was never implemented. Cascade-level auditing uses the separate `cascade_audit_log_path` key. |
+| `privacy_redaction_enabled` | Intended as a switch on `PrivacyFilter`; no code reads it (privacy filter is always on, and secret scrubbing is now always applied in v0.6.0). |
+| `enable_audit_log`, `audit_log_path` | Intended as a switch for an audit-log writer that was never implemented. Cascade-level auditing uses the separate `cascade_audit_log_path` key. The GeneralAuditWriter (real on-disk audit log) was deferred from v0.6.0 to v0.6.x — see `CHANGELOG.md` for the rationale. |
 | `enable_metrics` | Intended as a kill-switch for `MetricsCollector`; no code reads it (metrics always enabled when `HealthServer` is constructed). |
-| `max_agent_id_length`, `max_user_id_length` | Intended as bounds enforced by `UAMSConfig.validate()`; declared but never validated. |
-| `max_results_per_session` | Intended as a search cap; no code reads it. |
-| `llm_max_tokens`, `llm_temperature` | LLM client chat defaults; `LLMClient.chat(...)` accepts these as kwargs and uses its own internal defaults, but the global config values are not pushed into the chat call by default. Operators can pass them through `OpenAICompatibleClient(temperature=...)`. |
+| `*_use_tls` (`postgresql_use_tls`, `neo4j_use_tls`, `redis_use_tls`) | **Stored but not applied to the driver connection**. They are validated by `UAMSConfig.validate()` only. The underlying redis-py / neo4j / psycopg2 drivers do not read these values. Operators wanting TLS must configure it via driver-specific env vars (e.g. `REDIS_URL=rediss://...`). |
+| `connection_timeout_seconds` | Stored but only `read_timeout_seconds` is applied (in `llm/client.py`). Drivers use their own defaults for connect timeout. |
 
 ## Tier 4 — Field removed / renamed in v0.5.x
 

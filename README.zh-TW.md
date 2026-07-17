@@ -116,6 +116,25 @@ receipt = {
 
 ---
 
+## 🆕 7-17 新增（v0.6.0 — 稽核 pass 收尾）
+
+**Non-breaking minor release**,關閉 v0.5.2 外部稽核 14 項中的 9 項。新 API、新例外族、1 個 schema 遷移（SQLite 舊 DB 自動套用）。完整遷移指南見 `RELEASE_NOTES_v0.6.0.md`。
+
+| 改動 | 內容 | 原因 |
+|------|------|------|
+| **`UAMSError` 例外族** | 新 `uams.errors` 模組:`UAMSError` + `ConfigError` / `StorageError` / `CascadeError` / `LLMError`,從 `uams.*` 重新導出 | Vault 可按類別 catch UAMS 失敗,不再 `except Exception` 撒網。store 內部仍走 `try/except + log + fallback` 保 graceful degradation,只在 facade 邊界 raise |
+| **`MemoryStore.truncate()` + `list_all_paginated()` + `delete_by_filters()`** | SQLite 用 `DELETE FROM` 單 SQL 覆寫,不再卡 999 行 cap | 修復 v0.5.x `clear()` 靜默丟 >999 行的 P0 GDPR bug;`MigrationTool.migrate()` 不再一次性物化全表 |
+| **`MemoryStore.vector_search_capable` 類別屬性** | `InMemoryStore` / `ChromaDBStore` = True;其他 4 個 = False 且 `search_vector` 每次 INFO log | 操作員能在生產 log 看到「該後端向量搜尋是 recency fallback」 |
+| **`tenant_id` 接入 SQLiteStore + InMemoryStore** | schema 升 v2 + 加 `idx_<tier>_tenant` 索引;舊 DB 自動 `ALTER TABLE ADD COLUMN` 遷移;`delete_by_project_id(tenant_id=...)` 走複合 `WHERE` | 真多租戶 GDPR delete(其他 4 後端推 v0.6.x) |
+| **`PrivacyFilter` 拆 `SECRET_PATTERNS` / `PII_PATTERNS`** | secret(API key / bearer / 信用卡 / GitHub PAT)永遠 redact;PII(email / phone)僅 PRIVATE/INTERNAL/SECRET | 關閉 v0.5.x PUBLIC 內容帶 OpenAI key 直接落盤的 P0 合規漏洞 |
+| **`Memory.retrieval_score` 改 `float \| None = None`** + `_compress_to_budget` 改 `is None` 判斷 | 0.0 score 當 0.0 處理,不再走 `importance` fallback | 修復 `0.0` falsy 路由 bug |
+| **`AgentContext.namespace()` 含 `tenant_id`** | 4 段冒號拼接(原 3 段);None 時折疊為 `_` | 多租戶 key 隔離 |
+| **`OpenAICompatibleClient.achat` 加 retry loop** | 3 次嘗試,exponential backoff 0.5s/1s/2s,封頂 4s;retry `TimeoutException` / `ConnectError` / 429/5xx;永久 4xx 直接拋 | 同步 `chat()` 早就有 `max_retries=2`,async 路徑補齊 |
+| **`LLMCompressionEngine` 落盤前過 `PrivacyFilter`** | `metadata.privacy` 改取 source events 的 MAX(原取第一個) | LLM 輸出可能幻覺/回吐 PII / secret,壓縮鏈路必須過濾 |
+| **`observe()` 拒空 `agent_id` / `agent_type` / `session_id`** | 頂部校驗,warn + drop | 防止 misconfigured agent 落盤後被 `delete_by_filter('agent_id', '')` 一刀切 |
+| **`ChromaDBStore.list_all()` 真實流式** | `collection.get(include=['metadatas','documents'], limit=500, offset=offset)` 分頁(原 stub 返 `[]`) | 修復 ChromaDB 後端 cascade in-edge / `delete_by_project_id` / `migrate()` 靜默丟所有 memory 的 P0 bug |
+| 488 → 498 測試 | +10 新測試模組 | 無回歸;2 個 pre-existing failure 仍在 |
+
 ## 🆕 7-15 新增（v0.5.2 — 型別註解現代化）
 
 | 改動 | 內容 | 原因 |
@@ -443,7 +462,7 @@ universal-agent-memory/
 │   ├── research_agent.py
 │   ├── multi_agent.py
 │   └── _token_compression_demo.py
-├── tests/                  # 488 個測試
+├── tests/                  # 498 個測試
 │   ├── test_system.py
 │   ├── test_chaos.py
 │   ├── test_aplus.py
@@ -515,7 +534,7 @@ python tests/test_system.py
 | **6 後端真實驗證(CI 9/9 green)** | **PG / ChromaDB / Redis / Neo4j / SQLite / InMemory 全部以真實 service container 跑通** |
 | **級聯刪除** | **三策略 + visit-set + 最大深度上限 + 跨層隔離 + 最佳努力刪除 + JSONL 稽核** |
 
-**測試規模**:488 個測試(本地 32 skip:無 PG/Redis/Neo4j service 時跳過真實後端;CI 全跑通)。7-12 審計加固新增 29 個:訊號佇列 4 + Redis auto-disable 3 + SQLite close 2 + backup 錯誤分類 2 + cascade 審計日誌 2 + Async forget 4 + SQLite pool 3 + SIGTERM 3 + decay_sweep 鎖 2 + SQLite retrieve 回歸 3。
+**測試規模**:498 個測試(本地 32 skip:無 PG/Redis/Neo4j service 時跳過真實後端;CI 全跑通)。7-12 審計加固新增 29 個:訊號佇列 4 + Redis auto-disable 3 + SQLite close 2 + backup 錯誤分類 2 + cascade 審計日誌 2 + Async forget 4 + SQLite pool 3 + SIGTERM 3 + decay_sweep 鎖 2 + SQLite retrieve 回歸 3。
 
 ---
 
