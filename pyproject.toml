@@ -44,6 +44,16 @@ Issues = "https://github.com/liwt2010/universal-agent-memory/issues"
 Changelog = "https://github.com/liwt2010/universal-agent-memory/blob/main/CHANGELOG.md"
 Documentation = "https://github.com/liwt2010/universal-agent-memory/blob/main/docs/API.md"
 
+[project.scripts]
+# v0.7.0 (audit item 6): developer / SRE tools. NOT a unified
+# `uams` command with subcommands — Vault owns the user-facing
+# CLI surface (Typer). These are 4 separate console_scripts so
+# CI / SRE pipelines can call any one directly.
+uams-inspect = "uams.cli:main_inspect"
+uams-doctor  = "uams.cli:main_doctor"
+uams-migrate = "uams.cli:main_migrate"
+uams-bench    = "uams.cli:main_bench"
+
 [project.optional-dependencies]
 redis = ["redis>=5.0.0"]
 neo4j = ["neo4j>=5.0.0"]
