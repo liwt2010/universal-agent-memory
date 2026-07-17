@@ -48,7 +48,7 @@
 > 3. `redis test` 跟 `chromadb stress`:历史 backend CI 不稳定,需要单独 dev session 调研。
 > 4. `AsyncMemoryStore` ABC(P2-1)+ 真 async 6 存储:对 `async_system` 的 executor hop 是 8 线程默认池饱和源。
 
-> **2026-07-17 v10 更新(本次,v0.6.0 收尾)**:本次为 **外部审计 pass resolution 批次**。外部 agent 对 v0.5.2 出了 14 项 P0/P1/P2/P3 审计意见,本批**关闭 9 项**,**5 项推 v0.6.x**(需要 service container 验证)。`v0.6.0` 是 v0.5.2 之后的 **non-breaking minor release**。
+> **2026-07-17 v10 更新(本次,v0.6.0 收尾)**:本次为 **外部审计 pass resolution 批次**。外部 agent 对 v0.5.2 出了 14 项 P0/P1/P2/P3 审计意见,本批**关闭 9 项 + 1 项 partial**(P0-3,T09 + T03 在 v0.6.0 标签后由 commit `65f75ee` 补完 SQLite + InMemory reverse index),**3 项推 v0.6.x**(P2-1 跨后端集成测试 / P2-5 GeneralAuditWriter / 4 store 的 delete_by_filters 复合 WHERE)。`v0.6.0` 是 v0.5.2 之后的 **non-breaking minor release**。
 
 > **v10 工作范围**:
 > - **P0-1 (GDPR)**:6 store 加 `tenant_id` 列 + 真接线 `delete_by_filters`(本批做 SQLite + InMemory 2 个,其他 4 store 推 v0.6.x);SQLite schema 升 v2 加列迁移
@@ -65,8 +65,7 @@
 > - **P2-6**:`observe()` 顶部拒空 `agent_id` / `agent_type` / `session_id` + warn drop
 
 > **v10 推 v0.6.x 的项**(Q4 一次性策略之外,需要 service container 验证):
-> - P0-3 cascade reverse_index(4 store)
-> - P1-5 `MemoryStore.find_tier` 替代 `_locate_tier` 全 tier 扫
+> - **P0-3 + T09 在 v0.6.0 标签后由 commit `65f75ee` 补完**:InMemoryStore + SQLiteStore 维护 reverse index(`<tier>_incoming` 表 + 内存 dict);`MemoryStore.find_tier()` / `in_edges()` / `in_edges_scan()` 抽象 + 默认实现;`has_reverse_index` 类属性
 > - P2-1 跨后端 `delete_by_project_id(tenant_id=...)` 集成测试
 > - P2-5 `GeneralAuditWriter` 真做(Q2 选项 B,延后做 design review)
 > - 4 store (Redis/PG/Neo4j/Chroma) 的 `delete_by_filters` 复合 WHERE 覆盖

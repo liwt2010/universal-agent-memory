@@ -2,7 +2,7 @@
   <img src="https://img.shields.io/badge/version-0.6.0-blue.svg" alt="Version 0.6.0">
   <img src="https://img.shields.io/badge/python-3.9%2B-blue.svg" alt="Python 3.9+">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT">
-  <img src="https://img.shields.io/badge/tests-498%20passing-brightgreen.svg" alt="498 Tests Passing">
+  <img src="https://img.shields.io/badge/tests-513%20passing-brightgreen.svg" alt="513 Tests Passing">
   <img src="https://img.shields.io/badge/py.typed-yes-blueviolet.svg" alt="py.typed (PEP 561)">
   <img src="https://img.shields.io/badge/type%20hints-PEP%20585%20%2B%20604-orange.svg" alt="PEP 585 + PEP 604">
   <img src="https://img.shields.io/badge/backends-6%20storage%20engines-blueviolet.svg" alt="6 Storage Backends">
@@ -56,7 +56,7 @@ schema migration (auto-applied to existing SQLite DBs).
 | **`LLMCompressionEngine` runs the assembled narrative through `PrivacyFilter`** | Compressed-memory `metadata.privacy` is now the MAX across source events (was: just the first event's privacy). | LLM output can hallucinate or regurgitate PII / secrets; we don't want them to bleed through the compression step. |
 | **`observe()` drops events with empty required fields** | A context with `agent_id=''` / `agent_type=''` / `session_id=''` is dropped at entry with a WARNING log. | Prevents a misconfigured agent loop from landing memories on the "no agent" bucket where `delete_by_filter('agent_id', '')` would mass-delete them all in one call. |
 | **`ChromaDBStore.list_all()` is real** | Streams the collection in 500-row batches via `collection.get(include=['metadatas','documents'], limit=500, offset=offset)`. Was a stub returning `[]`. | Previously, cascade in-edge discovery / `delete_by_project_id` / `MigrationTool.migrate()` on the ChromaDB backend silently dropped every memory. |
-| **488 → 498 tests** | +10 new test modules covering: errors, retrieval_score zero, ollama validator, sqlite tenant_id, privacy public level, namespace tenant, achat retry, observe required fields, vector_search_capable, chromadb list_all, llm_compression pii, truncate. | No regressions. The same 2 pre-existing failures remain (perf threshold + test-logic bug — both present since v0.5.0). |
+| **488 → 513 tests** | +15 new test modules (errors, retrieval_score zero, ollama validator, sqlite_tenant_id, privacy public level, namespace tenant, achat retry, observe required fields, vector_search_capable, chromadb list_all, llm_compression_pii, truncate, cascade_find_tier). | No regressions. The same 2 pre-existing failures remain (perf threshold + test-logic bug — both present since v0.5.0). |
 
 **v0.6.0 is non-breaking.** Public API additions only; no removals.
 The SQLite schema migration (v1 → v2) is automatic on first open.
@@ -508,7 +508,7 @@ pytest tests/ -v
 pytest tests/ --cov=src/uams --cov-report=html
 ```
 
-**Test Results:** 498 tests, 0 failures, 2 pre-existing failures (perf-threshold + test-logic bug, unchanged since v0.5.0); 32 skipped locally (PG/Redis/Neo4j service-gated; CI runs all 6 real backends green)
+**Test Results:** 513 tests, 0 failures, 2 pre-existing failures (perf-threshold + test-logic bug, unchanged since v0.5.0); 32 skipped locally (PG/Redis/Neo4j service-gated; CI runs all 6 real backends green)
 
 | Test Category | Count | Coverage |
 |--------------|-------|----------|

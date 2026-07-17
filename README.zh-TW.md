@@ -133,7 +133,7 @@ receipt = {
 | **`LLMCompressionEngine` 落盤前過 `PrivacyFilter`** | `metadata.privacy` 改取 source events 的 MAX(原取第一個) | LLM 輸出可能幻覺/回吐 PII / secret,壓縮鏈路必須過濾 |
 | **`observe()` 拒空 `agent_id` / `agent_type` / `session_id`** | 頂部校驗,warn + drop | 防止 misconfigured agent 落盤後被 `delete_by_filter('agent_id', '')` 一刀切 |
 | **`ChromaDBStore.list_all()` 真實流式** | `collection.get(include=['metadatas','documents'], limit=500, offset=offset)` 分頁(原 stub 返 `[]`) | 修復 ChromaDB 後端 cascade in-edge / `delete_by_project_id` / `migrate()` 靜默丟所有 memory 的 P0 bug |
-| 488 → 498 測試 | +10 新測試模組 | 無回歸;2 個 pre-existing failure 仍在 |
+| 488 → 513 測試 | +15 新測試模組 | 無回歸;2 個 pre-existing failure 仍在 |
 
 ## 🆕 7-15 新增（v0.5.2 — 型別註解現代化）
 
@@ -462,7 +462,7 @@ universal-agent-memory/
 │   ├── research_agent.py
 │   ├── multi_agent.py
 │   └── _token_compression_demo.py
-├── tests/                  # 498 個測試
+├── tests/                  # 513 個測試
 │   ├── test_system.py
 │   ├── test_chaos.py
 │   ├── test_aplus.py
@@ -534,7 +534,7 @@ python tests/test_system.py
 | **6 後端真實驗證(CI 9/9 green)** | **PG / ChromaDB / Redis / Neo4j / SQLite / InMemory 全部以真實 service container 跑通** |
 | **級聯刪除** | **三策略 + visit-set + 最大深度上限 + 跨層隔離 + 最佳努力刪除 + JSONL 稽核** |
 
-**測試規模**:498 個測試(本地 32 skip:無 PG/Redis/Neo4j service 時跳過真實後端;CI 全跑通)。7-12 審計加固新增 29 個:訊號佇列 4 + Redis auto-disable 3 + SQLite close 2 + backup 錯誤分類 2 + cascade 審計日誌 2 + Async forget 4 + SQLite pool 3 + SIGTERM 3 + decay_sweep 鎖 2 + SQLite retrieve 回歸 3。
+**測試規模**:513 個測試(本地 32 skip:無 PG/Redis/Neo4j service 時跳過真實後端;CI 全跑通)。
 
 ---
 

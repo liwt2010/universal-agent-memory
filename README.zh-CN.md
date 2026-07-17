@@ -133,7 +133,7 @@ receipt = {
 | **`LLMCompressionEngine` 落库前过 `PrivacyFilter`** | `metadata.privacy` 改取 source events 的 MAX(原取第一个) | LLM 输出可能幻觉/回吐 PII / secret,压缩链路必须过滤 |
 | **`observe()` 拒空 `agent_id` / `agent_type` / `session_id`** | 顶部校验,warn + drop | 防止 misconfigured agent 落库后被 `delete_by_filter('agent_id', '')` 一刀切 |
 | **`ChromaDBStore.list_all()` 真实流式** | `collection.get(include=['metadatas','documents'], limit=500, offset=offset)` 分页(原 stub 返 `[]`) | 修复 ChromaDB 后端 cascade in-edge / `delete_by_project_id` / `migrate()` 静默丢所有 memory 的 P0 bug |
-| 488 → 498 测试 | +10 新测试模块,覆盖 errors / retrieval_score / ollama / tenant_id / privacy / namespace / achat retry / observe 校验 / vector_search_capable / chromadb list_all / llm_compression pii / truncate | 无回归;2 个 pre-existing failure 仍在(`test_large_chinese_text` perf / `test_shutdown_persists_working` test-logic) |
+| 488 → 513 测试 | +15 新测试模块 | 无回归;2 个 pre-existing failure 仍在(`test_large_chinese_text` perf / `test_shutdown_persists_working` test-logic) |
 
 ## 🆕 7-15 新增（v0.5.2 — 类型注解现代化）
 
@@ -462,7 +462,7 @@ universal-agent-memory/
 │   ├── research_agent.py
 │   ├── multi_agent.py
 │   └── _token_compression_demo.py
-├── tests/                  # 498 个测试
+├── tests/                  # 513 个测试
 │   ├── test_system.py
 │   ├── test_chaos.py
 │   ├── test_aplus.py
@@ -534,7 +534,7 @@ python tests/test_system.py
 | **6 后端真实验证(CI 9/9 green)** | **PG / ChromaDB / Redis / Neo4j / SQLite / InMemory 全部真实 service 跑通** |
 | **级联删除** | **三策略 + visit-set + 最大深度上限 + 跨层隔离 + 最佳努力删除 + JSONL 审计** |
 
-**测试规模**:488 测试(本地 32 skip:无 PG/Redis/Neo4j service 时跳过真实后端;CI 上全部跑通)。7-12 审计加固新增 29 个:信号队列 4 + Redis auto-disable 3 + SQLite close 2 + backup 错误分类 2 + cascade 审计日志 2 + Async forget 4 + SQLite pool 3 + SIGTERM 3 + decay_sweep 锁 2 + SQLite retrieve 回归 3。
+**测试规模**:513 测试(本地 32 skip:无 PG/Redis/Neo4j service 时跳过真实后端;CI 上全部跑通)。
 
 ---
 

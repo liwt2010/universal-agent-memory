@@ -136,11 +136,29 @@ are not green on every runner):
 * `UAMSError` is a new public symbol; pre-existing code that
   catches `Exception` is unaffected.
 
-Local: **498 tests pass** + 1 skipped (intentional v0.6.x
+Local: **513 tests pass** + 1 skipped (intentional v0.6.x
 follow-up) + 2 pre-existing unrelated failures
 (`test_large_chinese_text` perf threshold,
 `test_shutdown_persists_working` test-logic bug — both present
 since v0.5.0).
+
+### Added post-tag (commits after `v0.6.0`)
+
+* **T09 / P1-5 — `MemoryStore.find_tier()`.** New public
+  method on `MemoryStore`. `CascadeForgetter._locate_tier()`
+  delegates to it, replacing the previous per-tier `retrieve()`
+  sweep with one round-trip per tier.
+* **T03 / P0-3 (partial) — `MemoryStore.in_edges()` +
+  `in_edges_scan()` + `has_reverse_index` class attribute.**
+  InMemoryStore and SQLiteStore maintain a reverse index
+  for O(1) cascade in-edge discovery. The other 4 backends
+  fall back to the O(N) `in_edges_scan` path. Redis,
+  PostgreSQL, Neo4j, and ChromaDB reverse-index wiring
+  remains v0.6.x.
+* 15 new tests in `tests/test_cascade_find_tier.py`.
+
+Local after the post-tag commits: **526 tests pass** + 1
+skipped + 2 pre-existing failures (unchanged).
 
 See `RELEASE_NOTES_v0.6.0.md` for the full migration guide
 and `docs/CONFIG_REFERENCE.md` for the configuration surface.
